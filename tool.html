@@ -35,15 +35,23 @@
     <script>
       // 访问守卫：直接访问 tool.html（绕过密码页）时也必须验证。
       // sessionStorage 只在当前标签页有效，关闭标签页即失效。
+      //
+      // 注意：这里不能用 window.stop() —— 它会中断 HTML 解析，导致 body 永远空白
+      // （表现为整页全黑）。改为：不阻止解析，先盖一层遮罩，再跳转。
       (function () {
         var KEY = 'filmidx_ok';
         try {
           if (sessionStorage.getItem(KEY) === '1') return;
         } catch (e) {}
-        // 阻止一切后续渲染，立即返回密码页
-        location.replace('./index.html?guard=1');
+        // 立即盖一层不透明遮罩，防止跳转生效前闪出内容
+        try {
+          var d = document.createElement('style');
+          d.textContent = 'html,body{background:#12100e!important;visibility:hidden!important}';
+          document.documentElement.appendChild(d);
+        } catch (e) {}
+        // 返回密码页（用 meta 刷新兜底，保证任何环境下都能离开本页）
+        try { location.replace('./index.html?guard=1'); } catch (e) {}
         document.write('<meta http-equiv="refresh" content="0;url=./index.html">');
-        window.stop();
       })();
     </script>
   </head>
