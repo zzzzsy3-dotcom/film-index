@@ -2204,27 +2204,47 @@ canvas {
 .crop-footer,
 .frame-export-footer {
   display: flex;
-  gap: 10px;
-  justify-content: flex-end;
+  gap: 8px;
+  justify-content: stretch;
   padding: 16px 20px;
   border-top: 1px solid var(--line);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
-.crop-footer .text-button,
-.frame-export-footer .text-button {
+/* 4 个按钮（取消/打印/导出PDF/导出图片）始终排成一行：
+   辅助按钮 flex:1，主按钮 flex:1.4，靠比例分配宽度而不是固定 min-width */
+.frame-export-footer .text-button,
+.frame-export-footer .primary-button {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-left: 8px;
+  padding-right: 8px;
+  white-space: nowrap;
+}
+
+.frame-export-footer .primary-button {
+  flex-grow: 1.4;
+}
+
+.crop-footer .text-button {
   min-width: 80px;
 }
 
-/* 底部有 4 个按钮（取消/打印/导出PDF/确认导出），窄屏时压缩最小宽度避免换行 */
-@media (max-width: 560px) {
-  .frame-export-footer .text-button { min-width: 64px; }
-  .frame-export-footer .primary-button { min-width: 96px; }
-  .frame-export-footer { gap: 8px; padding: 12px 14px; }
+/* 窄屏（手机）时按钮区改为两行两列，避免文字被挤掉 */
+@media (max-width: 480px) {
+  .frame-export-footer {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .frame-export-footer .text-button,
+  .frame-export-footer .primary-button {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
-.crop-footer .primary-button,
-.frame-export-footer .primary-button {
+.crop-footer .primary-button {
   min-width: 120px;
 }
 

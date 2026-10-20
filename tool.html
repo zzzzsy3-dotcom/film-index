@@ -677,6 +677,11 @@
                 <p id="physicalReadoutDetail">—</p>
               </div>
             </div>
+            <label class="field" id="rollNameField">
+              <span>卷名（可选）</span>
+              <input id="rollName" type="text" maxlength="40" placeholder="例如：富士C200" autocomplete="off" />
+              <small class="field-hint">用于文件命名，导出到 <code>film-index / 日期 / 卷名</code> 目录结构。留空则用「film-index」</small>
+            </label>
           </div>
         </div>
         <p id="exportMemoryWarning" class="export-warning" aria-live="polite"></p>

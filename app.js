@@ -3022,11 +3022,12 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       const blob = new Blob(pngParts, { type: "image/png" });
       if (blob.size > MAX_STREAMED_PNG_BYTES) throw new Error("PNG_FILE_TOO_LARGE");
       const pagePart = getExportPageFilenamePart(layout.pagePreset);
-      const filename = ["film-index", pagePart, new Date().toISOString().slice(0, 10), "full-resolution"]
+      const filename = [getRollName(), pagePart, getLocalDateStamp(), "full-resolution"]
         .filter(Boolean)
         .join("-");
-      downloadBlob(blob, `${filename}.png`);
-      showNotice(`原图级索引图已拼接为一张 ${sizeLabel} 像素的 PNG`);
+      const saved = await saveArtifacts([{ name: `${filename}.png`, blob }], getRollName());
+      if (!saved) return;
+      showNotice(`原图级索引图已拼接为一张 ${sizeLabel} 像素的 PNG${saved.message}`);
     } catch (error) {
       try {
         await writer.abort(error);
@@ -3324,7 +3325,193 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     return new Blob([buildPdfBytes(pdfPages, pageWmm, pageHmm)], { type: "application/pdf" });
   }
 
-  function downloadBlob(blob, filename) {
+  // ── 导出到文件夹 / ZIP ──────────────────────────────────────────────
+  // 目标目录结构：film-index / YYYY-MM-DD / <卷名>-p1.png …
+  // 优先用 File System Access API 直接写文件夹（Chrome/Edge/Opera）；
+  // 不支持的浏览器（Safari/Firefox/手机）自动降级为 ZIP 下载。
+
+  // 本地时区的当天日期（不能用 toISOString，那是 UTC，晚上会差一天）
+  function getLocalDateStamp() {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const d = String(now.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
+  // 清理文件名里的非法字符，并去掉首尾空格和点
+  function sanitizeFileName(name) {
+    return String(name || "")
+      .replace(/[\\/:*?"<>|\r\n\t]/g, "-")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^\.+/, "")
+      .slice(0, 60) || "film-index";
+  }
+
+  // 读取导出弹窗里的卷名
+  function getRollName() {
+    const el = document.getElementById("rollName");
+    return sanitizeFileName(el && el.value);
+  }
+
+  // 产出目录路径：film-index/日期/
+  function getExportDirPath() {
+    return `film-index/${getLocalDateStamp()}/`;
+  }
+
+  // 判断浏览器是否支持直接写文件夹
+  function supportsFolderPicker() {
+    return typeof window.showDirectoryPicker === "function";
+  }
+
+  // 在目录句柄下创建子目录（逐级）
+  async function getOrCreateDir(rootHandle, pathParts) {
+    let current = rootHandle;
+    for (const part of pathParts) {
+      current = await current.getDirectoryHandle(part, { create: true });
+    }
+    return current;
+  }
+
+  // 直接写文件到指定目录
+  async function writeFileToDir(dirHandle, filename, blob) {
+    const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  // 把产物保存到磁盘。
+  // 优先：File System Access API 直接写文件夹（Chrome/Edge/Opera）
+  // 降级：打包成 ZIP 下载（Safari / Firefox / 手机浏览器）
+  // ── 记住导出目录（IndexedDB 持久化 FileSystemDirectoryHandle）──────────
+  // 第一次点导出时选一次位置，之后永久记住，不再弹窗。
+  const EXPORT_DIR_DB = "film-index-export-db";
+  const EXPORT_DIR_STORE = "handles";
+  const EXPORT_DIR_KEY = "exportRoot";
+
+  function openHandleDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(EXPORT_DIR_DB, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(EXPORT_DIR_STORE)) {
+          db.createObjectStore(EXPORT_DIR_STORE);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function idbGet(key) {
+    const db = await openHandleDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(EXPORT_DIR_STORE, "readonly");
+        const req = tx.objectStore(EXPORT_DIR_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  async function idbSet(key, value) {
+    const db = await openHandleDb();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(EXPORT_DIR_STORE, "readwrite");
+        const req = tx.objectStore(EXPORT_DIR_STORE).put(value, key);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  // 读取已记住的目录句柄（可能因权限或目录被删而失效）
+  async function getRememberedDir() {
+    try {
+      const handle = await idbGet(EXPORT_DIR_KEY);
+      if (!handle) return null;
+      const perm = await handle.queryPermission({ mode: "readwrite" });
+      if (perm === "granted") return handle;
+      return { handle, needsPermission: true };
+    } catch {
+      return null;
+    }
+  }
+
+  // 申请或重新选择导出根目录
+  async function chooseExportRoot(startInHandle) {
+    const options = {
+      id: "film-index-export",
+      mode: "readwrite",
+    };
+    if (startInHandle) options.startIn = startInHandle;
+    else options.startIn = "downloads";
+    const handle = await window.showDirectoryPicker(options);
+    await idbSet(EXPORT_DIR_KEY, handle);
+    return handle;
+  }
+
+  // 确保有可用权限的根目录：优先用记住的，不行才让用户选一次
+  async function ensureExportRoot() {
+    if (!supportsFolderPicker()) {
+      throw new Error("NO_FOLDER_SUPPORT");
+    }
+    const remembered = await getRememberedDir();
+    if (remembered) {
+      if (!remembered.needsPermission) return remembered;
+      // 权限过期：重新请求（需要用户手势，导出按钮点击本身就是手势）
+      const perm = await remembered.handle.requestPermission({ mode: "readwrite" });
+      if (perm === "granted") return remembered.handle;
+    }
+    // 首次使用：弹窗默认就停在「下载」文件夹（startIn: "downloads"），
+    // 用户点一下「选择此文件夹」即可，之后永久记住，不再询问。
+    return chooseExportRoot(remembered && remembered.handle);
+  }
+
+  // 把产物保存到磁盘：固定位置 film-index / 日期 /
+  // 位置只在第一次（或主动更换）时选择，之后自动记住。
+  async function saveArtifacts(artifacts, rollName) {
+    if (!artifacts || !artifacts.length) {
+      showNotice("导出失败：没有可保存的内容");
+      return null;
+    }
+    const dirPath = getExportDirPath();
+
+    let rootHandle;
+    try {
+      rootHandle = await ensureExportRoot();
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        showNotice("已取消导出");
+        return null;
+      }
+      if (error && error.message === "NO_FOLDER_SUPPORT") {
+        showNotice("当前浏览器不支持直接写入文件夹，请用 Chrome / Edge / Opera");
+        return null;
+      }
+      console.error("获取导出目录失败", error);
+      showNotice("无法获取导出目录：" + (error && error.message ? error.message : "未知错误"));
+      return null;
+    }
+
+    // 目录：film-index / 日期 /
+    const parts = dirPath.split("/").filter(Boolean);
+    const targetDir = await getOrCreateDir(rootHandle, parts);
+    for (const item of artifacts) {
+      await writeFileToDir(targetDir, item.name, item.blob);
+    }
+    return { message: `，已保存到 ${rootHandle.name}/${dirPath}` };
+  }
+
+function downloadBlob(blob, filename) {
     const link = document.createElement("a");
     const objectUrl = URL.createObjectURL(blob);
     link.href = objectUrl;
@@ -3506,7 +3693,9 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
       try {
         const pagePart = getExportPageFilenamePart();
-        const baseName = ["film-index", pagePart, new Date().toISOString().slice(0, 10)]
+        const dateStamp = getLocalDateStamp();
+        const rollName = getRollName();
+        const baseName = [rollName, pagePart, dateStamp]
           .filter(Boolean)
           .join("-");
 
@@ -3519,10 +3708,13 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
           ? (document.getElementById("multiPageExportMode") || {}).value || "both"
           : "single";
 
+        // 先把所有产物收集起来，再决定写到文件夹还是打包成 ZIP
+        const artifacts = [];
+
         if (multiMode === "both" || multiMode === "single") {
           let blob = await canvasToBlob(outputCanvas, mimeType, quality);
           if (isPhysical) blob = await embedPhysicalMetadata(blob, mimeType, meta);
-          downloadBlob(blob, `${baseName}.${extension}`);
+          artifacts.push({ name: `${baseName}.${extension}`, blob });
         }
 
         if (multiMode === "both" || multiMode === "pages") {
@@ -3541,16 +3733,24 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
             );
             let pageBlob = await canvasToBlob(pageCanvas, mimeType, quality);
             if (isPhysical) pageBlob = await embedPhysicalMetadata(pageBlob, mimeType, meta);
-            downloadBlob(pageBlob, `${baseName}-p${i + 1}.${extension}`);
+            artifacts.push({ name: `${baseName}-p${i + 1}.${extension}`, blob: pageBlob });
             // 释放裁切画布内存，避免多页时占用翻倍
             pageCanvas.width = 0;
             pageCanvas.height = 0;
-            // 连续自动下载可能被浏览器拦截，间隔一小段时间更稳妥
-            if (i < layout.pages.length - 1) {
-              await new Promise((resolve) => window.setTimeout(resolve, 350));
-            }
           }
         }
+
+        // 一并生成 PDF，放进同一批产物（PDF 本身已含全部页）
+        try {
+          const pdfBlob = await exportPdfFromCanvas(outputCanvas, layout);
+          artifacts.push({ name: `${baseName}.pdf`, blob: pdfBlob });
+        } catch (pdfError) {
+          console.warn("PDF 生成失败，仅导出图片", pdfError);
+        }
+
+        // 统一落盘：优先写文件夹，不支持则打包 ZIP
+        const saved = await saveArtifacts(artifacts, rollName);
+        if (!saved) return;
 
         if (isPhysical) {
           const pageText = meta.pageCount > 1 ? `，共 ${meta.pageCount} 页` : "";
@@ -3559,7 +3759,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
             : (multiMode === "both" && meta.pageCount > 1
               ? `，已导出总长图 + ${meta.pageCount} 张单页图`
               : "");
-          showNotice(`已按 ${meta.dpi} DPI 真实尺寸导出，单帧 ${meta.frameMm} mm${pageText}${fileText}（打印请选实际大小）`);
+          showNotice(`已按 ${meta.dpi} DPI 真实尺寸导出，单帧 ${meta.frameMm} mm${pageText}${fileText}${saved.message}（打印请选实际大小）`);
         }
       } catch (error) {
         console.error("导出画布编码失败", error);
@@ -3739,13 +3939,19 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       }
 
       const pagePart = getExportPageFilenamePart();
-      const filename = ["film-index", pagePart, new Date().toISOString().slice(0, 10)]
+      const rollName = getRollName();
+      const filename = [rollName, pagePart, getLocalDateStamp()]
         .filter(Boolean)
         .join("-");
-      downloadBlob(pdfBlob, `${filename}.pdf`);
+      // 与图片导出走同一套落盘逻辑（固定位置 film-index/日期/）
+      const saved = await saveArtifacts(
+        [{ name: `${filename}.pdf`, blob: pdfBlob }],
+        rollName,
+      );
+      if (!saved) return;
 
       const pageText = meta.pageCount > 1 ? `，共 ${meta.pageCount} 页` : "";
-      showNotice(`已导出 PDF${pageText}，页面尺寸为真实物理尺寸，打印请选「实际大小 / 100%」`);
+      showNotice(`已导出 PDF${pageText}，页面尺寸为真实物理尺寸，打印请选「实际大小 / 100%」${saved.message}`);
     } catch (error) {
       console.error("PDF 导出失败", error);
       showNotice("PDF 导出失败，请重试");
