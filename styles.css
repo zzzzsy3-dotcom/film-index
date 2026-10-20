@@ -1959,17 +1959,19 @@ canvas {
   position: fixed;
   left: 50%;
   bottom: 22px;
-  z-index: 300;
+  z-index: 9999;
   max-width: min(520px, calc(100vw - 40px));
   padding: 11px 18px 11px 16px;
-  border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--accent);
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  border-left: 4px solid #b06d1e;
   border-radius: var(--r-md);
-  background: rgba(22, 18, 14, 0.96);
-  color: var(--ink);
+  /* 配色写死，不跟随主题变量：浅色主题下 --ink 是深褐色，
+     配深色背景会变成"深字压深底"完全看不见。 */
+  background: #fdfaf3;
+  color: #241d12;
   font-size: 13.5px;
   line-height: 1.5;
-  box-shadow: var(--shadow-2);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
   opacity: 0;
   transform: translateX(-50%) translateY(12px);
   transition:
@@ -1980,6 +1982,34 @@ canvas {
 
 .notice.is-visible {
   opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* 暗色主题下换成深底浅字（主题属性挂在 <html> 上） */
+:root[data-theme="dark"] .notice {
+  border-color: rgba(255, 255, 255, 0.16);
+  border-left-color: #e0a458;
+  background: #2a231a;
+  color: #f2ead9;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
+}
+
+/* 弹窗打开时把通知挪到顶部，避免与弹窗底部按钮区重叠看不清。
+   弹窗本身居中且 max-height 100vh-60px，顶部落在弹窗上沿之外。 */
+body.has-modal-open .notice {
+  bottom: auto;
+  top: 14px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 13px 20px 13px 18px;
+  font-size: 14px;
+  line-height: 1.55;
+  font-weight: 500;
+  border-left-width: 5px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  transform: translateX(-50%) translateY(-12px);
+}
+
+body.has-modal-open .notice.is-visible {
   transform: translateX(-50%) translateY(0);
 }
 

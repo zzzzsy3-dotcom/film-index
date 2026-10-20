@@ -484,8 +484,6 @@
     <!-- 场景过场黑场幕布（gsap-ui.js 控制透明度） -->
     <div id="sceneVeil" aria-hidden="true"></div>
 
-    <div class="notice" id="notice" role="status" aria-live="polite"></div>
-
     <!-- 帧操作菜单 -->
     <div class="frame-menu" id="frameMenu" role="menu" hidden>
       <button type="button" role="menuitem" data-action="crop">
@@ -685,11 +683,6 @@
                 <p id="physicalReadoutDetail">—</p>
               </div>
             </div>
-            <label class="field" id="rollNameField">
-              <span>卷名（可选）</span>
-              <input id="rollName" type="text" maxlength="40" placeholder="例如：富士C200" autocomplete="off" />
-              <small class="field-hint">用于文件命名，导出到 <code>film-index / 日期 / 卷名</code> 目录结构。留空则用「film-index」</small>
-            </label>
           </div>
         </div>
         <p id="exportMemoryWarning" class="export-warning" aria-live="polite"></p>
@@ -730,6 +723,8 @@
     <script src="optical-loupe.js"></script>
     <script src="app.js?v=20261020-a4-6col-5row"></script>
     <script src="gsap-ui.js?v=20261012-sidebar"></script>
+    <!-- 全局通知：放在 body 最末尾，确保层级高于所有弹窗 -->
+    <div class="notice" id="notice" role="status" aria-live="polite"></div>
   </body>
 </html>
 
