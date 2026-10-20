@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="author" content="Judian99" />
+    <meta name="contact" content="小红书:3661182800, 抖音:69530829181, 邮箱:1946378724@qq.com" />
+    <meta name="license" content="MIT" />
+    <meta name="description" content="整理扫描底片，在浏览器本地生成可导出的胶片索引图。" />
+    <title>海带索引图-FILM</title>
+    <script>
+      // 主题引导：首帧前确定暗/亮，避免闪色（默认跟随系统）
+      (function () {
+        var theme = "dark";
+        try {
+          var saved = localStorage.getItem("haidai-theme");
+          if (saved === "light" || saved === "dark") theme = saved;
+          else theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } catch (e) {}
+        document.documentElement.dataset.theme = theme;
+        // 启动序列预隐藏：与 gsap-ui 初始态一致，避免脚本加载间隙的内容闪现
+        try {
+          if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+            document.documentElement.classList.add("anim-boot");
+            setTimeout(function () {
+              document.documentElement.classList.remove("anim-boot");
+            }, 1500);
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171310'/%3E%3Crect x='6' y='6' width='20' height='20' rx='2' fill='%23100d0a'/%3E%3Ccircle cx='16' cy='14' r='5' fill='%23e0a458'/%3E%3Crect x='8' y='22' width='16' height='1.6' fill='%23e0a458' opacity='.55'/%3E%3C/svg%3E" />
+    <!-- 本地分发版：已移除 Google Fonts（国内可能加载失败），styles.css 会自动回退到系统字体 -->
+    <link rel="stylesheet" href="styles.css?v=20261012f-sidebar" />
+    <script>
+      // 访问守卫：直接访问 tool.html（绕过密码页）时也必须验证。
+      // sessionStorage 只在当前标签页有效，关闭标签页即失效。
+      (function () {
+        var KEY = 'filmidx_ok';
+        try {
+          if (sessionStorage.getItem(KEY) === '1') return;
+        } catch (e) {}
+        // 阻止一切后续渲染，立即返回密码页
+        location.replace('./index.html?guard=1');
+        document.write('<meta http-equiv="refresh" content="0;url=./index.html">');
+        window.stop();
+      })();
+    </script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="controls" aria-label="索引图设置">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <div class="brand-copy">
+            <div class="brand-title-row">
+              <h1>海带索引图</h1>
+              <span class="brand-film">FILM</span>
+            </div>
+            <p>整理扫描底片，生成可编辑、可导出的胶片索引图。</p>
+          </div>
+          <button id="themeToggle" class="icon-button theme-toggle" type="button" aria-pressed="false" aria-label="切换到浅色模式">
+            <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="4.4" />
+              <path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.3 5.3l1.7 1.7M17 17l1.7 1.7M18.7 5.3L17 7M7 17l-1.7 1.7" />
+            </svg>
+            <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20.6 14.1A8.6 8.6 0 0 1 9.9 3.4a8.6 8.6 0 1 0 10.7 10.7z" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="steps">
+          <details class="step workflow-panel" id="stepSource" open>
+            <summary>
+              <span class="step-no" aria-hidden="true">01</span>
+              <span class="step-title">导入与排序</span>
+              <span class="chip" id="stepChipSource">未导入</span>
+            </summary>
+            <div class="step-body">
+              <label class="drop-zone" id="dropZone">
+                <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+                <span class="drop-icon" aria-hidden="true">+</span>
+                <span class="drop-title">选择或拖入扫描件</span>
+                <span class="drop-subtitle">JPG / PNG / WebP，按本地文件处理</span>
+              </label>
+
+              <div class="field">
+                <span class="field-label"><span>排序方式</span></span>
+                <div class="segmented segmented-3 sort-segmented" role="radiogroup" aria-label="排序方式">
+                  <span class="segment-indicator" aria-hidden="true"></span>
+                  <label>
+                    <input type="radio" name="sortMode" value="name" checked />
+                    <span>名称</span>
+                  </label>
+                  <label>
+                    <input type="radio" name="sortMode" value="time" />
+                    <span>时间</span>
+                  </label>
+                  <label>
+                    <input type="radio" name="sortMode" value="custom" />
+                    <span>自定义</span>
+                  </label>
+                </div>
+              </div>
+
+              <label class="checkbox-row">
+                <input id="reverseSort" type="checkbox" />
+                <span>倒序</span>
+              </label>
+
+              <span class="info-icon-wrapper">
+                <span class="info-icon" aria-label="排序说明">i</span>
+                <span class="info-popup">时间排序优先使用 EXIF 拍摄时间，没有时退回文件修改时间。直接在预览图上拖动某一帧、或在照片列表中拖拽，都会切换为自定义排序。</span>
+              </span>
+
+              <details class="photo-list-section" id="photoListPanel" hidden>
+                <summary>
+                  <span>照片列表</span>
+                  <span class="photo-list-count" id="photoListCount">0 张</span>
+                </summary>
+                <div class="photo-list-content">
+                  <ul class="photo-list" id="photoList"></ul>
+                  <button id="clearButton" class="text-button" type="button">清空全部</button>
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <details class="step workflow-panel" id="stepStock" open>
+            <summary>
+              <span class="step-no" aria-hidden="true">02</span>
+              <span class="step-title">胶卷型号</span>
+              <span class="chip" id="stepChipStock">—</span>
+            </summary>
+            <div class="step-body">
+              <label class="field stock-search-field">
+                <span>搜索胶卷型号</span>
+                <input
+                  id="stockSearch"
+                  type="search"
+                  placeholder="名称、边字或冲洗工艺"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-controls="stockSelect"
+                  aria-describedby="stockSearchStatus"
+                />
+              </label>
+              <p id="stockSearchStatus" class="field-hint stock-search-status" aria-live="polite"></p>
+              <label class="field">
+                <span>胶卷型号</span>
+                <select id="stockSelect"></select>
+              </label>
+            </div>
+          </details>
+
+          <details class="step workflow-panel" id="stepFormat" open>
+            <summary>
+              <span class="step-no" aria-hidden="true">03</span>
+              <span class="step-title">画幅与排列</span>
+              <span class="chip" id="stepChipFormat">135 · 6 张/行</span>
+            </summary>
+            <div class="step-body">
+              <label class="field">
+                <span>画幅</span>
+                <select id="frameAspect">
+                  <option value="135" selected>135 全画幅 3:2</option>
+                  <option value="half">半格 3:4（每行 12 张）</option>
+                  <option value="66">6×6 方画幅 1:1</option>
+                  <option value="645">6×4.5 中画幅（竖幅）</option>
+                  <option value="67">6×7 中画幅</option>
+                  <option value="69">6×9 中画幅 84×56</option>
+                  <option value="wide">135 宽幅</option>
+                  <option value="xpan" hidden>XPan 135 宽幅 65×24（兼容）</option>
+                  <option value="135-69" hidden>135 宽幅 84×24（兼容）</option>
+                  <option value="612">6×12 宽幅中画幅</option>
+                  <option value="617">6×17 宽幅中画幅</option>
+                </select>
+              </label>
+              <label class="field" id="wideSpecField" hidden>
+                <span>宽幅规格</span>
+                <select id="wideSpecSelect">
+                  <option value="xpan">XPan 65×24mm（每行 3 张）</option>
+                  <option value="135-69">84×24mm（6×9 相机，每行 2 张）</option>
+                </select>
+              </label>
+              <div class="field" id="halfFrameModeField" hidden>
+                <span>半格输入</span>
+                <div class="segmented" role="radiogroup" aria-label="半格输入方式">
+                  <label>
+                    <input type="radio" name="halfFrameMode" value="cropped" checked />
+                    <span>单张裁切</span>
+                  </label>
+                  <label>
+                    <input type="radio" name="halfFrameMode" value="uncropped" />
+                    <span>单张未裁切</span>
+                  </label>
+                </div>
+              </div>
+              <label class="field">
+                <span>每行张数</span>
+                <select id="columnsSelect">
+                  <option value="2">2 张</option>
+                  <option value="3">3 张</option>
+                  <option value="4">4 张</option>
+                  <option value="5">5 张</option>
+                  <option value="6" selected>6 张</option>
+                  <option value="7">7 张</option>
+                  <option value="8">8 张</option>
+                </select>
+                <small id="columnsHint" class="field-hint" hidden></small>
+              </label>
+            </div>
+          </details>
+
+          <details class="step workflow-panel" id="stepLook" open>
+            <summary>
+              <span class="step-no" aria-hidden="true">04</span>
+              <span class="step-title">胶片外观</span>
+              <span class="chip" id="stepChipLook">—</span>
+            </summary>
+            <div class="step-body">
+              <label class="checkbox-row">
+                <input id="showEdgeText" type="checkbox" checked />
+                <span>模拟边字</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="showSprockets" type="checkbox" checked />
+                <span>模拟齿孔</span>
+              </label>
+              <small id="sprocketsHint" class="field-hint" hidden></small>
+              <label class="checkbox-row">
+                <input id="imageInSprockets" type="checkbox" />
+                <span>成像覆盖齿孔区</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="imageInEdgeText" type="checkbox" />
+                <span>成像覆盖边字区</span>
+              </label>
+              <small id="imageCoverageHint" class="field-hint" hidden></small>
+              <label class="checkbox-row">
+                <input id="showLeader" type="checkbox" />
+                <span>模拟片头片尾</span>
+                <small class="field-hint" style="margin:4px 0 0">默认关闭：开启后首行空出 1 格给片头，每页变成 29 张</small>
+              </label>
+              <small id="leaderHint" class="field-hint" hidden></small>
+              <label class="field background-style-field">
+                <span>背景样式</span>
+<select id="backgroundStyle">
+                <option value="transparent" selected>透明（推荐，可叠底色）</option>
+                <option value="none">无（淡黄纸底）</option>
+                <option value="white">纯白</option>
+                <option value="blur">高斯模糊</option>
+                </select>
+              </label>
+              <label class="checkbox-row">
+                <input id="showStripShadow" type="checkbox" checked />
+                <span>胶片条投影</span>
+              </label>
+              <label class="field background-blur-field" id="backgroundBlurField">
+                <span class="field-label-with-value">
+                  <span>虚化强度</span>
+                  <output id="backgroundBlurValue" for="backgroundBlur">24 px</output>
+                </span>
+                <input id="backgroundBlur" type="range" min="8" max="64" step="2" value="24" aria-describedby="backgroundHint" />
+              </label>
+              <small id="backgroundHint" class="field-hint">默认使用首图；点击单帧可将其设为背景</small>
+            </div>
+          </details>
+        </div>
+
+        <details class="step is-sub workflow-panel" id="stockPanel">
+          <summary>
+            <span class="step-title">自定义型号</span>
+            <span class="chip" id="stepChipStockLib">0 个自定义</span>
+          </summary>
+          <div class="step-body">
+            <p class="hint">
+              <span class="info-icon-wrapper">
+                <span class="info-icon" aria-label="说明">i</span>
+                <span class="info-popup">新增或编辑胶卷型号，保存在浏览器本地。选中内置型号时可另存为自定义型号后修改。</span>
+              </span>
+            </p>
+            <label class="field">
+              <span>名称</span>
+              <input id="stockName" type="text" placeholder="如 Kodak Vision3 250D" maxlength="60" />
+            </label>
+            <label class="field">
+              <span>边字字样（留空表示底片无边字）</span>
+              <input id="stockEdgeText" type="text" placeholder="如 KODAK VISION3 250D" maxlength="60" />
+            </label>
+            <label class="field">
+              <span>冲洗工艺</span>
+              <select id="stockProcess">
+                <option value="C-41" selected>C-41 彩色负片</option>
+                <option value="BW">黑白负片</option>
+                <option value="E-6">E-6 反转片</option>
+                <option value="ECN-2">ECN-2 电影卷</option>
+              </select>
+            </label>
+            <details class="stock-advanced" id="stockAdvanced">
+              <summary>高级外观（默认随工艺）</summary>
+              <label class="checkbox-row">
+                <input id="stockInkEnabled" type="checkbox" />
+                <span>自定义边字颜色</span>
+              </label>
+              <label class="field stock-ink-field" id="stockInkField">
+                <span>边字颜色</span>
+                <input id="stockInkColor" type="color" value="#ffb040" />
+              </label>
+              <label class="field">
+                <span>交替边字字样（逗号分隔，留空随工艺）</span>
+                <input id="stockPresets" type="text" placeholder="如 135-36, C-41, SAFETY FILM" />
+              </label>
+              <label class="field">
+                <span>帧号格式</span>
+                <select id="stockFrameNumber">
+                  <option value="">随工艺默认</option>
+                  <option value="N/NA">N 与 NA 双号</option>
+                  <option value="N">仅 N 单号</option>
+                </select>
+              </label>
+            </details>
+            <div class="stock-actions">
+              <button id="stockSaveButton" class="primary-button" type="button">保存为新型号</button>
+              <button id="stockDeleteButton" class="text-button" type="button" style="display: none">删除此型号</button>
+            </div>
+            <div class="stock-actions">
+              <button id="stockExportButton" class="text-button" type="button">导出 JSON</button>
+              <button id="stockImportButton" class="text-button" type="button">导入 JSON</button>
+              <input id="stockImportInput" type="file" accept="application/json,.json" hidden />
+            </div>
+          </div>
+        </details>
+
+        <details class="step is-sub workflow-panel" id="advancedPanel">
+          <summary>
+            <span class="step-title">高级设置</span>
+            <span class="chip" id="stepChipAdvanced">尺寸 420</span>
+          </summary>
+          <div class="step-body">
+            <label class="field">
+              <span>尺寸基准</span>
+              <span class="info-icon-wrapper">
+                <input id="frameWidth" type="number" min="180" max="1200" step="20" value="420" />
+                <span class="info-icon" aria-label="尺寸基准说明">i</span>
+                <span class="info-popup">135 以标准 36mm 画幅为基准，宽幅长边按物理比例增长</span>
+              </span>
+            </label>
+            <p class="hint">
+              <span class="info-icon-wrapper">
+                <span class="info-icon" aria-label="说明">i</span>
+                <span class="info-popup">微调齿孔与边字的渲染比例，实时作用于预览和导出。</span>
+              </span>
+            </p>
+            <div id="tuneFields"></div>
+          </div>
+        </details>
+
+        <details class="step is-sub workflow-panel">
+          <summary>
+            <span class="step-title">关于</span>
+          </summary>
+          <div class="step-body">
+            <p class="about-text">
+              <strong>海带索引图 FILM</strong><br />
+              作者: Judian99<br />
+              小红书: 3661182800<br />
+              抖音: 69530829181<br />
+              邮箱: <a href="mailto:1946378724@qq.com">1946378724@qq.com</a>
+            </p>
+            <a href="https://github.com/Judian99/film-index-generator" target="_blank" rel="noopener" class="text-button">GitHub 项目主页</a>
+          </div>
+        </details>
+      </aside>
+
+      <section class="workspace" aria-label="预览">
+        <div class="topbar">
+          <div>
+            <p class="eyebrow">Preview</p>
+            <h2 id="statusTitle">等待导入扫描件</h2>
+          </div>
+          <div class="preview-tools" aria-label="预览缩放">
+            <div class="tool-group">
+              <button id="zoomOut" class="icon-button" type="button" aria-label="缩小预览">-</button>
+              <label class="zoom-field">
+                <span>缩放</span>
+                <input id="zoomRange" type="range" min="25" max="200" step="5" value="55" />
+              </label>
+              <button id="zoomIn" class="icon-button" type="button" aria-label="放大预览">+</button>
+              <button id="zoomFit" class="text-button" type="button">适合</button>
+            </div>
+
+            <div class="tool-group">
+              <button id="lightTableButton" class="text-button light-table-entry" type="button" aria-pressed="false" disabled>
+                <span class="light-table-entry-aperture" aria-hidden="true"><span></span></span>
+                <span class="light-table-entry-label">
+                  <strong>观片台</strong>
+                  <small>LIGHT TABLE</small>
+                </span>
+              </button>
+            </div>
+
+            <div class="tool-group">
+              <button id="frameSelectButton" class="text-button" type="button" aria-pressed="false" disabled>选择单帧</button>
+              <button id="clearFrameSelectionButton" class="text-button" type="button" disabled>清除选择</button>
+              <div class="counter" id="frameSelectionCounter" aria-live="polite">已选 0 帧</div>
+            </div>
+
+            <div class="tool-group">
+              <button id="batchFrameExportButton" class="primary-button" type="button" disabled>批量导出</button>
+              <button id="exportButton" class="primary-button" type="button" disabled>导出索引图</button>
+              <div class="counter" id="imageCounter">0 张</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview-wrap" id="previewWrap">
+          <canvas id="previewCanvas" tabindex="0" aria-label="海带索引图 FILM 预览"></canvas>
+          <div class="optical-loupe" id="opticalLoupe" aria-hidden="true" hidden>
+            <canvas id="opticalLoupeCanvas"></canvas>
+            <span class="loupe-frame-tag" id="loupeFrameTag" hidden></span>
+          </div>
+          <div class="empty-state" id="emptyState">
+            <div class="film-stage" id="filmStage" data-film-state="intro">
+              <div class="film-heading">
+                <div>
+                  <span class="film-index">HDF / CONTACT 001</span>
+                  <p>海带暗房 · 数字检片台</p>
+                </div>
+                <span class="film-format">135 · 36 EXP</span>
+              </div>
+
+              <div class="film-viewport" aria-hidden="true">
+                <div class="film-rail film-rail-top"></div>
+                <div class="film-rail film-rail-bottom"></div>
+                <div class="film-strip">
+                  <div class="film-sprockets film-sprockets-top"></div>
+                  <div class="film-edge-text">HAIDAI FILM · SAFETY FILM · C-41 · 001</div>
+                  <div class="film-frames">
+                    <span style="--frame-index: 0"></span>
+                    <span style="--frame-index: 1"></span>
+                    <span style="--frame-index: 2"></span>
+                    <span style="--frame-index: 3"></span>
+                    <span style="--frame-index: 4"></span>
+                    <span style="--frame-index: 5"></span>
+                  </div>
+                  <div class="film-frame-numbers">
+                    <span>01</span><span>02</span><span>03</span><span>04</span><span>05</span><span>06</span>
+                  </div>
+                  <div class="film-sprockets film-sprockets-bottom"></div>
+                </div>
+                <div class="film-scan-gate"></div>
+                <div class="film-progress"><span></span></div>
+              </div>
+
+              <div class="film-copy">
+                <div class="film-status-light" aria-hidden="true"></div>
+                <div>
+                  <h3 id="filmTitle">装入你的底片扫描件</h3>
+                  <p id="filmDescription">图片只在浏览器本地整理，生成一张可导出的胶片索引图。</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="light-table-hud" id="lightTableHud" role="toolbar" aria-label="观片台工具" hidden>
+          <button id="lightTableExit" class="light-table-exit" type="button">退出观片台</button>
+          <output id="loupeMagnification" class="light-table-magnification-readout" aria-label="观片器倍率">12.0X</output>
+          <span class="light-table-status" id="lightTableStatus" role="status" aria-live="polite">滚轮调节倍率 · 单击切换聚焦</span>
+        </div>
+      </section>
+    </main>
+
+    <!-- 场景过场黑场幕布（gsap-ui.js 控制透明度） -->
+    <div id="sceneVeil" aria-hidden="true"></div>
+
+    <div class="notice" id="notice" role="status" aria-live="polite"></div>
+
+    <!-- 帧操作菜单 -->
+    <div class="frame-menu" id="frameMenu" role="menu" hidden>
+      <button type="button" role="menuitem" data-action="crop">
+        <span class="menu-icon">✂</span>
+        <span>裁切</span>
+      </button>
+      <button type="button" role="menuitem" data-action="rotate">
+        <span class="menu-icon">↻</span>
+        <span>旋转 90°</span>
+      </button>
+      <button type="button" role="menuitem" data-action="insert">
+        <span class="menu-icon">+</span>
+        <span>在此前插入</span>
+      </button>
+      <button type="button" role="menuitemcheckbox" data-action="set-background" aria-checked="false">
+        <span class="menu-icon">◉</span>
+        <span>设为虚化背景</span>
+      </button>
+      <button type="button" role="menuitem" data-action="export-frame">
+        <span class="menu-icon">⇩</span>
+        <span>导出单帧</span>
+      </button>
+      <button type="button" role="menuitem" data-action="delete">
+        <span class="menu-icon">×</span>
+        <span>删除</span>
+      </button>
+    </div>
+
+    <!-- 裁切工具弹窗 -->
+    <div class="crop-modal" id="cropModal" role="dialog" aria-modal="true" aria-labelledby="cropModalTitle" hidden>
+      <div class="crop-backdrop"></div>
+      <div class="crop-container">
+        <div class="crop-header">
+          <h3 id="cropModalTitle">裁切图片</h3>
+          <button type="button" class="crop-close" id="cropClose" aria-label="关闭">×</button>
+        </div>
+        <div class="crop-body">
+          <div class="crop-preview-wrap">
+            <canvas id="cropCanvas"></canvas>
+            <div class="crop-overlay" id="cropOverlay">
+              <div class="crop-handle nw"></div>
+              <div class="crop-handle ne"></div>
+              <div class="crop-handle sw"></div>
+              <div class="crop-handle se"></div>
+            </div>
+          </div>
+        </div>
+        <div class="crop-footer">
+          <button type="button" class="text-button" id="cropRestoreOriginal">恢复原图</button>
+          <button type="button" class="text-button" id="cropReset">重置</button>
+          <button type="button" class="text-button" id="cropCancel">取消</button>
+          <button type="button" class="primary-button" id="cropApply">应用裁切</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 单帧片基导出弹窗 -->
+    <div class="frame-export-modal" id="frameExportModal" role="dialog" aria-modal="true" aria-labelledby="frameExportTitle" hidden>
+      <div class="frame-export-backdrop"></div>
+      <div class="frame-export-container" tabindex="-1">
+        <div class="frame-export-header">
+          <div>
+            <h3 id="frameExportTitle">导出单帧</h3>
+            <p id="frameExportMeta"></p>
+          </div>
+          <button type="button" class="frame-export-close" id="frameExportClose" aria-label="关闭">×</button>
+        </div>
+        <div class="frame-export-body">
+          <div class="frame-export-preview-wrap">
+            <canvas id="frameExportCanvas"></canvas>
+          </div>
+          <div class="frame-export-controls">
+            <label class="field">
+              <span>输出质量</span>
+              <select id="frameExportScale">
+                <option value="1">标准 1x</option>
+                <option value="2" selected>精细 2x</option>
+                <option value="3">超精细 3x</option>
+                <option value="full">原图级</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>格式</span>
+              <select id="frameExportFormat">
+                <option value="image/png">PNG</option>
+                <option value="image/jpeg">JPG</option>
+              </select>
+            </label>
+            <label class="field frame-export-quality" id="frameExportQualityField" hidden>
+              <span>JPG 质量 <output id="frameExportQualityValue">92%</output></span>
+              <input id="frameExportQuality" type="range" min="70" max="100" value="92" />
+            </label>
+          </div>
+          <div class="frame-export-info">
+            <strong id="frameExportSize">—</strong>
+            <p id="frameExportStatus" role="status" aria-live="polite">预览已生成</p>
+          </div>
+        </div>
+        <div class="frame-export-footer">
+          <button type="button" class="text-button" id="frameExportCancel">取消</button>
+          <button type="button" class="primary-button" id="frameExportApply">导出单帧</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 导出索引图弹窗 -->
+    <div class="frame-export-modal" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle" hidden>
+      <div class="frame-export-backdrop"></div>
+      <div class="frame-export-container" tabindex="-1">
+        <div class="frame-export-header">
+          <div>
+            <h3 id="exportModalTitle">导出索引图</h3>
+            <p id="exportModalMeta">配置输出质量与格式后导出</p>
+          </div>
+          <button type="button" class="frame-export-close" id="exportModalClose" aria-label="关闭">×</button>
+        </div>
+        <div class="frame-export-body">
+          <div class="frame-export-controls">
+            <label class="field">
+              <span>输出质量</span>
+              <select id="exportScale">
+                <option value="1">标准 1x</option>
+                <option value="2" selected>精细 2x</option>
+                <option value="3">超精细 3x</option>
+                <option value="full">原图级</option>
+              </select>
+              <span class="info-icon-wrapper">
+                <span class="info-icon" aria-label="输出质量说明">i</span>
+                <span class="info-popup">原图级仅支持 PNG；超出浏览器画布上限时，会流式拼接为一张完整 PNG</span>
+              </span>
+            </label>
+            <label class="field">
+              <span>页面比例</span>
+              <select id="exportPagePreset">
+                <option value="free">当前比例</option>
+                <option value="a4-portrait">A4 竖向</option>
+                <option value="a4-landscape" selected>A4 横向</option>
+              </select>
+              <small class="field-hint" id="pagePresetHint">A4 模式下按「每行张数」排版，不裁切照片</small>
+            </label>
+            <label class="field">
+              <span>格式</span>
+              <select id="formatSelect">
+                <option value="image/png">PNG</option>
+                <option value="image/jpeg">JPG</option>
+              </select>
+            </label>
+            <label class="field" id="multiPageExportField" hidden>
+              <span>多页导出方式</span>
+              <select id="multiPageExportMode">
+                <option value="both" selected>总长图 + 各单页图（推荐）</option>
+                <option value="pages">只要各单页图</option>
+                <option value="single">只要一张总长图</option>
+              </select>
+              <small class="field-hint">超过一页时生效。导入其他软件打印时选「各单页图」最省事；选「总长图」则是一张竖着叠放的长图</small>
+            </label>
+            <label class="field" id="qualityField">
+              <span>JPG 质量</span>
+              <input id="jpgQuality" type="range" min="70" max="100" value="92" />
+            </label>
+            <div class="physical-toggle">
+              <label class="checkbox-row">
+                <input id="exportPhysical" type="checkbox" checked />
+                <span>真实尺寸打印（按毫米锚定）</span>
+              </label>
+              <small class="field-hint">按真实底片尺寸渲染（135 标准帧 = 36 × 24 mm）并写入打印密度。打印时请选“实际大小 / 100%”并关闭无边距；若使用“适合纸张”，用下方校准补偿</small>
+            </div>
+            <div id="physicalOptions" hidden>
+              <label class="field">
+                <span>打印 DPI</span>
+                <select id="exportDpi">
+                  <option value="150">150（草稿）</option>
+                  <option value="300" selected>300（标准打印）</option>
+                  <option value="600">600（高精度，内存占用大）</option>
+                </select>
+              </label>
+              <label class="field" id="physicalMarginField">
+                <span>安全页边距</span>
+                <select id="physicalMargin">
+                  <option value="6" selected>6 mm ★横向正好 5 行</option>
+                  <option value="8">8 mm（会掉到 4 行）</option>
+                  <option value="10">10 mm（行数更少）</option>
+                  <option value="12">12 mm</option>
+                </select>
+                <small class="field-hint">按打印机不可打印区域预留。要「每行 6 张 × 每页 5 行」必须用 6mm，改成 8mm 会掉到 4 行</small>
+              </label>
+              <label class="field">
+                <span class="field-label-with-value">
+                  <span>打印校准</span>
+                  <output id="calibValue">100%</output>
+                </span>
+                <input id="exportCalibration" type="range" min="90" max="110" step="0.5" value="100" />
+                <small class="field-hint">先按 100% 导出一张并实测帧宽：实测偏大则调低，偏小则调高，设置自动记住</small>
+              </label>
+              <div class="frame-export-info" id="physicalReadout">
+                <strong id="physicalReadoutSize">—</strong>
+                <p id="physicalReadoutDetail">—</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p id="exportMemoryWarning" class="export-warning" aria-live="polite"></p>
+        <div class="frame-export-footer">
+          <button type="button" class="text-button" id="exportModalCancel">取消</button>
+          <button type="button" class="text-button" id="exportModalPrint">打印</button>
+          <button type="button" class="primary-button" id="exportModalPdf">导出 PDF</button>
+          <button type="button" class="primary-button" id="exportModalConfirm">导出图片</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- GSAP 动画库 (CDN)：纯装饰，断网/被墙时加载失败也不影响排版与打印，gsap-ui.js 内部已做降级 -->
+    <script>
+      // 兜底：GSAP 是同步阻塞加载，网络不通时会拖慢首屏甚至一直转圈。
+      // 这里不阻塞页面 —— 拿不到就拿不到，动画层会自动跳过（gsap-ui.js 有 typeof 判断）。
+      window.__gsapReady = false;
+      window.__loadGsap = function () {
+        var s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js';
+        s.crossOrigin = 'anonymous';
+        s.referrerPolicy = 'no-referrer';
+        s.integrity = 'sha512-7eHRwcbYkK4d9g/6tD/mhkf++eoTHwpNM9woBxtPUBWm67zeAfFC+HrdoE2GanKeocly/VxeLvIqwvCdk7qScg==';
+        s.onload = function () { window.__gsapReady = true; };
+        s.onerror = function () { window.__gsapFailed = true; };
+        document.head.appendChild(s);
+      };
+    </script>
+    <script>
+      // 3 秒内没拿到就直接放弃动画，不让用户干等。排版/打印逻辑完全不依赖它。
+      setTimeout(window.__loadGsap, 0);
+    </script>
+    <script src="baidu-pan-config.js"></script>
+    <script src="film-frame-shared.js?v=20260823-shared"></script>
+    <script src="film-frame-135.js?v=20261011-edgenum"></script>
+    <script src="film-frame.js?v=20260823-shared"></script>
+    <script src="print-physical.js?v=20260923-print"></script>
+    <script src="optical-loupe.js"></script>
+    <script src="app.js?v=20261020-a4-6col-5row"></script>
+    <script src="gsap-ui.js?v=20261012-sidebar"></script>
+  </body>
+</html>
+
