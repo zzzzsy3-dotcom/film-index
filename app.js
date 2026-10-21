@@ -35,6 +35,7 @@
   const imageCoverageHint = document.getElementById("imageCoverageHint");
   const sprocketsHint = document.getElementById("sprocketsHint");
   const showLeader = document.getElementById("showLeader");
+  const showTrailer = document.getElementById("showTrailer");
   const leaderHint = document.getElementById("leaderHint");
   const backgroundStyle = document.getElementById("backgroundStyle");
   const backgroundBlurField = document.getElementById("backgroundBlurField");
@@ -570,6 +571,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     imageInSprockets,
     imageInEdgeText,
     showLeader,
+    showTrailer,
     backgroundStyle,
     backgroundBlur,
     showStripShadow,
@@ -2062,6 +2064,12 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     }
 
     showLeader.disabled = format120;
+    showTrailer.disabled = format120;
+    if (format120) {
+      // 120 胶片无片头片尾，切过来时自动取消勾选，避免状态残留
+      if (showLeader.checked) showLeader.checked = false;
+      if (showTrailer.checked) showTrailer.checked = false;
+    }
     if (leaderHint) {
       leaderHint.textContent = format120 ? "120 胶片无片头片尾" : "";
       leaderHint.hidden = !format120;
@@ -3980,6 +3988,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       imageInSprockets: isWide135 && imageInSprockets.checked,
       imageInEdgeText: isWide135 && imageInEdgeText.checked,
       showLeader: showLeader.checked && !is120,
+      showTrailer: showTrailer.checked && !is120,
       showStripShadow: showStripShadow.checked,
       backgroundMode: backgroundStyle.value,
       backgroundEnabled: backgroundStyle.value === "blur",
@@ -4100,6 +4109,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       imageInSprockets: isWide135 && imageInSprockets.checked,
       imageInEdgeText: isWide135 && imageInEdgeText.checked,
       showLeader: showLeader.checked && !is120,
+      showTrailer: showTrailer.checked && !is120,
       showStripShadow: showStripShadow.checked,
       backgroundMode: backgroundStyle.value,
       backgroundEnabled: backgroundStyle.value === "blur",
@@ -4263,7 +4273,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       rowIdx += 1;
     } while (index < itemCount);
     const lastRow = rows[rows.length - 1];
-    lastRow.trailer = options.showLeader;
+    // 片尾独立控制：不再跟随片头
+    lastRow.trailer = Boolean(options.showTrailer);
     lastRow.trimmed = lastRow.count < lastRow.capacity;
     return rows;
   }

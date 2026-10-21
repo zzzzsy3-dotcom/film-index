@@ -246,11 +246,17 @@
                 <span>成像覆盖边字区</span>
               </label>
               <small id="imageCoverageHint" class="field-hint" hidden></small>
-              <label class="checkbox-row">
-                <input id="showLeader" type="checkbox" />
-                <span>模拟片头片尾</span>
-                <small class="field-hint" style="margin:4px 0 0">默认关闭：开启后首行空出 1 格给片头，每页变成 29 张</small>
-              </label>
+              <div class="leader-options">
+                <label class="checkbox-row">
+                  <input id="showLeader" type="checkbox" />
+                  <span>片头</span>
+                </label>
+                <label class="checkbox-row">
+                  <input id="showTrailer" type="checkbox" />
+                  <span>片尾</span>
+                </label>
+              </div>
+              <small class="field-hint" style="margin:4px 0 0">默认全关。开启片头后首行空出 1 格；开启片尾后末帧画剪刀切口。两者可单独开启。</small>
               <small id="leaderHint" class="field-hint" hidden></small>
               <label class="field background-style-field">
                 <span>背景样式</span>

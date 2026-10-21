@@ -3622,3 +3622,20 @@ body::-webkit-scrollbar-thumb:hover,
     height: 27px;
   }
 }
+
+/* ===== 片头 / 片尾 两个独立选项 ===== */
+.leader-options {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.leader-options .checkbox-row {
+  flex: 1 1 0;
+  min-width: 120px;
+}
+
+.leader-options .checkbox-row:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
