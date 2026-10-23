@@ -65,7 +65,25 @@
   const halfFrameModeField = document.getElementById("halfFrameModeField");
   const halfFrameModeInputs = document.querySelectorAll("input[name='halfFrameMode']");
   const columnsSelect = document.getElementById("columnsSelect");
+
+  // 用途常量：提到最前面，避免 updateFrameModeControls 等早期调用点命中 TDZ
+  const PURPOSE_NEGATIVE = "negative";   // 胶片反转（A4 横向胶片条）
+  const PURPOSE_INDEX6 = "index6";       // 6 寸索引
+  const PURPOSE_INDEX8 = "index8";       // 8 寸索引
+  const PURPOSE_INDEX_A4 = "indexa4";    // A4 索引（297×210 横向网格）
+
+  // 用途 → 网格索引 presetId（胶片反转没有网格）
+  const PURPOSE_TO_GRID_PRESET = {
+    [PURPOSE_INDEX6]: "6inch",
+    [PURPOSE_INDEX8]: "8inch",
+    [PURPOSE_INDEX_A4]: "a4grid",
+  };
+  const GRID_PURPOSES = Object.keys(PURPOSE_TO_GRID_PRESET);
   const columnsHint = document.getElementById("columnsHint");
+
+
+
+
 
   // ── 排版常量（保持原版胶片条厚度，只修列数逻辑）────────────────────────
   // BAND_H_MM / ROW_GAP_MM 沿用上游原值，不做任何压缩，
@@ -98,7 +116,9 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   const photoListCount = document.getElementById("photoListCount");
   const photoList = document.getElementById("photoList");
   const clearButton = document.getElementById("clearButton");
-  const noticeEl = document.getElementById("notice");
+  // 通知元素放在 body 末尾（层级高于所有弹窗），app.js 加载时它尚未解析，
+  // 所以这里惰性获取，不能在顶层缓存。
+  const getNoticeEl = () => document.getElementById("notice");
   const frameMenu = document.getElementById("frameMenu");
   const cropModal = document.getElementById("cropModal");
   const cropCanvas = document.getElementById("cropCanvas");
@@ -585,6 +605,14 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   });
 
   columnsSelect.addEventListener("change", () => {
+    // 6 寸索引：列数直接取这个控件，改动后立即重绘预览
+    if (isSixInchPurpose()) {
+      rememberManualColumns();
+      if (state.items.length) drawSixInchPreview(getSortedItems());
+      syncGridColumns();
+      updateExportPurposeInfo();
+      return;
+    }
     if (columnsSelect.disabled || is120Format() || is135WideFormat() || isCroppedHalfFrameMode()) return;
     if (isHalfFrameMode()) {
       state.manualHalfColumns = Math.max(4, Number(columnsSelect.value) || 6);
@@ -598,6 +626,19 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   halfFrameModeInputs.forEach((control) => {
     control.addEventListener("change", handleFrameModeChange);
   });
+
+  // 6 寸模式：显示/隐藏 logo 选择器，更新提示文案
+  function updateSixInchUI() {
+    const isSix = isSixInchPurpose() || FilmIndex6Inch.isGridPreset(exportPagePreset.value);
+    const logoField = document.getElementById("brandLogoFieldLeft");
+    if (logoField) logoField.hidden = !isSix;
+    // 提示文案统一由 updateExportMemoryWarning 维护，这里不重复写，避免互相覆盖
+    // 预加载 logo，避免导出时画出空白
+    if (isSix && window.FilmIndex6Inch) {
+      FilmIndex6Inch.loadLogo(getBrandLogoValue());
+    }
+    return isSix;
+  }
 
   function updateExportFormatControls() {
     if (exportPhysical.checked) {
@@ -623,9 +664,18 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     const items = getSortedItems();
     if (!items.length) { exportMemoryWarning.textContent = ""; return; }
 
+    const preset = exportPagePreset.value;
+    const gridPresetId = FilmIndex6Inch.isGridPreset(preset) ? preset : null;
+    const isSixInch = Boolean(gridPresetId);
+
     let layout;
     let columns;
-    if (exportPhysical.checked) {
+    if (isSixInch) {
+      // 网格索引模式：独立布局（网格缩略图 + 末行右侧品牌板）
+      const six = getSixInchExportLayout(items.length, 1, gridPresetId);
+      layout = six.layout;
+      columns = six.layout.columns;
+    } else if (exportPhysical.checked) {
       const physical = getPhysicalExportLayout(items.length);
       layout = physical.layout;
       columns = physical.meta.columns;
@@ -643,10 +693,20 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     const estimatedPeakBytes = estimatedPixelBytes * 2;
     const estimatedPeakMB = Math.round(estimatedPeakBytes / 1024 / 1024);
     const memoryWarningThreshold = 500 * 1024 * 1024;
-    const preset = exportPagePreset.value;
     const orientation = preset.endsWith("-landscape") ? "横向" : "竖向";
     if (estimatedPeakBytes > memoryWarningThreshold) {
       exportMemoryWarning.textContent = `⚠ 导出约需 ${estimatedPeakMB}MB 内存，老旧设备可能闪退，建议降低导出质量或减少照片`;
+    } else if (isSixInch) {
+      // 网格索引：一页装下所有照片，行列由算法自动定
+      const rows = layout.rows || 0;
+      const capacity = layout.cells
+        ? layout.cells.filter((c) => !c.blocked).length
+        : rows * columns;
+      const pageW = layout.pageWmm || 152;
+      const pageH = layout.pageHmm || 102;
+      const gridDpi = loadPrintSettings().dpi || 300;
+      exportMemoryWarning.textContent =
+        `${pageW} × ${pageH} mm · ${gridDpi} DPI · ${rows} 行 × ${columns} 列 · 一页最多 ${capacity} 张 · ${layout.canvasW.toLocaleString()} × ${layout.canvasH.toLocaleString()} px`;
     } else if (preset !== "free") {
       const physicalPrefix = exportPhysical.checked ? "真实尺寸 · " : "";
       // 补充每页行数/张数，让用户直接知道一页能放多少
@@ -664,6 +724,9 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     if (presetHint) {
       if (preset === "free") {
         presetHint.textContent = "自由尺寸，按内容排版，不分页";
+      } else if (FilmIndex6Inch.isGridPreset(preset)) {
+        const gp = FilmIndex6Inch.getPreset(preset);
+        presetHint.textContent = `横向 ${gp.w} × ${gp.h} mm · 一张纸打印全部照片，最后一行右侧带品牌板`;
       } else {
         const mmLabel = preset.endsWith("-landscape") ? "297 × 210 mm" : "210 × 297 mm";
         const rowGapMm = exportPhysical.checked ? physicalMargin.value : 6;
@@ -695,6 +758,13 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     }
     const { layout, meta } = getPhysicalExportLayout(items.length);
     const preset = exportPagePreset.value;
+    if (FilmIndex6Inch.isGridPreset(preset)) {
+      // 网格索引：6 寸 / 8 寸 / A4，均为横向
+      const gp = FilmIndex6Inch.getPreset(preset);
+      physicalReadoutSize.textContent = `${gp.name} ${gp.w} × ${gp.h} mm · ${meta.columns} 列 × ${layout.rows} 行`;
+      physicalReadoutDetail.textContent = `本批 ${items.length} 张 · 一页最多 ${layout.cells.filter((c) => !c.blocked).length} 张`;
+      return;
+    }
     if (meta.pageCount > 1) {
       physicalReadoutSize.textContent = `A4 × ${meta.pageCount} 页 · 每页 ${meta.columns} 列`;
     } else if (preset === "free") {
@@ -716,10 +786,36 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   }
 
   function updatePhysicalControls() {
-    const on = exportPhysical.checked;
+    const isSix = FilmIndex6Inch.isGridPreset(exportPagePreset.value);
+    const on = exportPhysical.checked && !isSix;
     physicalOptions.hidden = !on;
     exportScale.disabled = on;
     physicalMarginField.hidden = exportPagePreset.value === "free";
+
+    // 「打印 DPI」是独立控件：网格索引（6/8/A4 索引）的画布像素也由它决定，
+    // 所以网格索引下同样要显示（原来它藏在 physicalOptions 里，网格时被一起隐藏）。
+    const dpiField = document.getElementById("dpiField");
+    const dpiHint = document.getElementById("dpiFieldHint");
+    if (dpiField) dpiField.hidden = !(isSix || exportPhysical.checked);
+    if (dpiHint) {
+      dpiHint.textContent = isSix
+        ? "决定索引图输出画布的像素密度（每格实际像素数）"
+        : "决定输出画布的真实像素密度";
+    }
+
+    // 「输出质量」说明：真实尺寸 / 网格索引下倍率无意义，分辨率由 DPI 决定
+    const scaleHint = document.getElementById("exportScaleHint");
+    if (scaleHint) {
+      scaleHint.textContent = on
+        ? "真实尺寸打印的分辨率由「打印 DPI」决定，此处不适用"
+        : isSix
+          ? "索引图的格子尺寸统一，不支持「原图级」放大；分辨率由「打印 DPI」决定"
+          : "自由尺寸模式下的输出倍率";
+    }
+    // 网格索引无法「原图级」（格子统一，放大后无意义）→ 禁用该选项
+    const fullOption = exportScale.querySelector('option[value="full"]');
+    if (fullOption) fullOption.disabled = isSix;
+
     updateExportFormatControls();
     if (on) updatePhysicalReadout();
   }
@@ -732,6 +828,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     }
     updatePhysicalControls();
     updateExportMemoryWarning();
+    updateExportPurposeInfo();
     exportModal.hidden = false;
     document.body.style.overflow = "hidden";
     // 通知改到顶部显示，避免被弹窗底部按钮区遮住
@@ -748,8 +845,29 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   exportScale.addEventListener("change", updateExportFormatControls);
   exportPagePreset.addEventListener("change", () => {
     physicalMarginField.hidden = exportPhysical.checked && exportPagePreset.value === "free";
+    updateSixInchUI();
     updateExportMemoryWarning();
     if (exportPhysical.checked) updatePhysicalReadout();
+  });
+  // 左侧品牌 logo（6 寸用途下显示）
+  const brandLogoLeft = document.getElementById("brandLogoLeft");
+  if (brandLogoLeft) {
+    brandLogoLeft.addEventListener("change", () => {
+      if (window.FilmIndex6Inch) {
+        FilmIndex6Inch.ensureLogoReady(brandLogoLeft.value).then(() => {
+          drawSixInchPreview.logoReady = true;
+          if (isSixInchPurpose() && state.items.length) drawSixInchPreview(getSortedItems());
+        });
+      }
+      updateExportPurposeInfo();
+    });
+  }
+
+  // 用途切换（胶片反转 / 6 寸索引）
+  document.querySelectorAll('input[name="purposeMode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (radio.checked) setPurposeMode(radio.value);
+    });
   });
   formatSelect.addEventListener("change", updateExportFormatControls);
   exportPhysical.addEventListener("change", updatePhysicalControls);
@@ -757,6 +875,8 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     persistPrintSetting(PRINT_DPI_KEY, exportDpi.value);
     updatePhysicalReadout();
     updateExportMemoryWarning();
+    // 网格索引的导出画布密度也由 DPI 决定 → 同步刷新信息行
+    updateExportPurposeInfo();
   });
   physicalMargin.addEventListener("change", () => {
     persistPrintSetting(PRINT_MARGIN_KEY, physicalMargin.value);
@@ -1907,7 +2027,66 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   }
 
   // 根据画布坐标求插入位置（0..items.length）
+  // 网格索引的插入位置：找到点落在哪个格子行/列，返回「插到第几张之前」。
+  // 末行的品牌板占位不参与（它不是照片格）。
+  function computeGridDropIndex(point) {
+    const items = getSortedItems();
+    if (!items.length) return 0;
+    // ⚠️ 必须用「预览」的布局：预览画布用 previewDpi，导出布局用打印 DPI，
+    //    两套坐标系不同。混用会导致拖拽落点偏移（本轮修复）。
+    const layout = drawSixInchPreview.lastLayout
+      || getSixInchExportLayout(items.length, 1).layout;
+    const cells = layout.cells.filter((cell) => !cell.blocked);
+    if (!cells.length) return 0;
+
+    let bestIndex = cells.length;
+    let bestDist = Infinity;
+    for (let i = 0; i < cells.length; i += 1) {
+      const cell = cells[i];
+      const cx = cell.x + cell.w / 2;
+      const cy = cell.y + cell.h / 2;
+      const distance = Math.hypot(point.x - cx, point.y - cy);
+      if (distance < bestDist) { bestDist = distance; bestIndex = i; }
+      // 点已经落在某格内部 → 插到该格之前（跨行时用 x 判断左右半）
+      if (point.x >= cell.x && point.x <= cell.x + cell.w
+        && point.y >= cell.y && point.y <= cell.y + cell.h) {
+        const before = point.x < cell.x + cell.w / 2;
+        bestIndex = before ? i : i + 1;
+        break;
+      }
+    }
+    return clamp(bestIndex, 0, items.length);
+  }
+
+  // 网格索引的拖拽插入指示线
+  function drawGridDropIndicator(layout) {
+    const dropIndex = state.dropIndex;
+    if (dropIndex === null || dropIndex === undefined) return;
+    const cells = layout.cells.filter((cell) => !cell.blocked);
+    if (!cells.length) return;
+
+    const atEnd = dropIndex >= cells.length;
+    const anchorCell = atEnd ? cells[cells.length - 1] : cells[dropIndex];
+    if (!anchorCell) return;
+
+    const before = !atEnd && dropIndex < cells.length;
+    const lineX = before
+      ? anchorCell.x - (dropIndex % layout.columns === 0 ? layout.gap : layout.gap) / 2
+      : anchorCell.x + anchorCell.w + layout.gap / 2;
+
+    ctx.save();
+    ctx.shadowColor = "rgba(255, 176, 64, 0.9)";
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = "#ffb040";
+    const lineW = Math.max(3, Math.round(anchorCell.w * 0.02));
+    roundedRect(ctx, lineX - lineW / 2, anchorCell.y, lineW, anchorCell.h, lineW / 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   function computeDropIndex(point) {
+    // 网格索引（6 寸 / 8 寸 / A4 索引）：按格子网格算插入位置
+    if (isGridPurpose()) return computeGridDropIndex(point);
     const options = getRenderOptions(1);
     const layout = computeLayout(state.items.length, options);
     const stripStride = layout.stripH + options.rowGap;
@@ -2029,6 +2208,12 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     const wide135 = is135WideFormat();
     const format = getFormat();
 
+    // 6 寸索引：列数就是「每行张数」，放开所有格式下的禁用与强制值
+    if (isSixInchPurpose()) {
+      applySixInchColumnsControl();
+      return;
+    }
+
     Array.from(columnsSelect.options).forEach((option) => {
       option.disabled = false;
     });
@@ -2120,7 +2305,8 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
   async function readImageFile(file) {
     const [originalSource, taken] = await Promise.all([
-      decodeImage(file),
+      // 降采样到 PREVIEW_MAX_SIDE：批量导入大图时这是能否不崩的关键
+      decodeImage(file, { maxSide: PREVIEW_MAX_SIDE }),
       readExifDate(file).catch(() => null),
     ]);
     const item = {
@@ -2204,7 +2390,105 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     return queued;
   }
 
+  // 只读 JPEG 文件头拿像素尺寸（不解码像素，几 KB 就够）。
+  // 用于「原图级」导出前的内存预检 —— 降采样后 item 里已经没有原图尺寸了。
+  async function readJpegDimensions(file) {
+    if (!file || file.type !== "image/jpeg") return null;
+    try {
+      const buffer = await file.slice(0, 128 * 1024).arrayBuffer();
+      const view = new DataView(buffer);
+      let offset = 2;
+      while (offset + 9 <= view.byteLength) {
+        const marker = view.getUint16(offset);
+        if ((marker & 0xff00) !== 0xff00) break;
+        const size = view.getUint16(offset + 2);
+        // SOF0~SOF15，排除 DHT(C4) / JPG(C8) / DAC(CC)
+        if (marker >= 0xffc0 && marker <= 0xffcf
+          && marker !== 0xffc4 && marker !== 0xffc8 && marker !== 0xffcc) {
+          return { width: view.getUint16(offset + 7), height: view.getUint16(offset + 5) };
+        }
+        offset += 2 + size;
+      }
+    } catch (error) {
+      // 读不到就按未知处理
+    }
+    return null;
+  }
+
+  // 本地照片按需回到全分辨率：从 File 重新解码，套用已有的裁切/旋转。
+  // 常驻内存里只留 PREVIEW_MAX_SIDE 的降采样版；只有裁切、单帧原图级导出
+  // 这类「单张」操作才临时升级，用完立即降回，避免批量占用显存。
+  async function upgradeLocalItemToFull(item) {
+    if (!item.file || item.fullResolution) return item;
+    // 先把降采样版「摘下来」暂存：rebuildItemSource 会 close 掉不再被采用的旧源，
+    // 不摘的话降采样版会在升级过程中被释放，之后无法降回。
+    const keepPreview = { originalSource: item.originalSource };
+    const full = await decodeImage(item.file);
+    item.originalSource = full;
+    item.originalWidth = full.width;
+    item.originalHeight = full.height;
+    item.editSource = null;
+    item.editWidth = full.width;
+    item.editHeight = full.height;
+    item.source = full;
+    item.width = full.width;
+    item.height = full.height;
+    item.fullResolution = true;
+    item.fullResolutionBackup = keepPreview;
+    // 用全分辨率重做一遍裁切 + 旋转
+    await rebuildItemSource(item, item.editVersion);
+    return item;
+  }
+
+  // 降回常驻的降采样版（释放全分辨率占用的显存）。
+  // 降采样版作为新的基准，裁切与旋转重新跑一遍 —— 保证用户的编辑结果不丢。
+  async function downgradeLocalItem(item) {
+    const backup = item.fullResolutionBackup;
+    if (!backup) return item;
+    item.fullResolution = false;
+    item.fullResolutionBackup = null;
+    // 释放全分辨率的三个源
+    closeDistinctSources(item.originalSource, item.editSource, item.source);
+    // 降采样版重新作为基准
+    item.originalSource = backup.originalSource;
+    item.originalWidth = backup.originalSource.width;
+    item.originalHeight = backup.originalSource.height;
+    item.editSource = null;
+    item.editWidth = backup.originalSource.width;
+    item.editHeight = backup.originalSource.height;
+    item.source = backup.originalSource;
+    item.width = backup.originalSource.width;
+    item.height = backup.originalSource.height;
+    item.autoTurns = 0;
+    // 重新套用裁切与旋转
+    await rebuildItemSource(item, item.editVersion);
+    return item;
+  }
+
+  // 批量降回：导出/打印/裁切结束后调用，把临时占用的显存还回去
+  async function downgradeAllLocalFullResolutions() {
+    const targets = state.items.filter((item) => item.fullResolution && item.fullResolutionBackup);
+    if (!targets.length) return false;
+    for (const item of targets) {
+      await downgradeLocalItem(item);
+    }
+    render();
+    renderPhotoList();
+    return true;
+  }
+
   async function ensureOriginal(item, reason = "操作") {
+    // 本地导入的照片：平时只保留降采样版，需要原图时（裁切 / 原图级导出）
+    // 从 File 重新解码。原程序这条路径只覆盖网盘照片，本地照片永远拿不到原图。
+    if (!item.remote) {
+      if (!item.file || item.fullResolution) return item;
+      try {
+        return await upgradeLocalItemToFull(item);
+      } catch (error) {
+        console.error("本地原图解码失败", item.name, error);
+        return item;
+      }
+    }
     if (!item.remote || item.remote.quality === "full") return item;
     if (item.remote.hydrationPromise) return item.remote.hydrationPromise;
 
@@ -2413,7 +2697,17 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     rotCtx.translate(canvas.width, 0);
     rotCtx.rotate(Math.PI / 2);
     rotCtx.drawImage(source, 0, 0);
-    return canvasToSource(canvas);
+    const result = await canvasToSource(canvas);
+    // 🔴 显式释放 canvas 的 backing store。
+    //    canvas 的像素缓冲由浏览器管理，GC 不保证立刻归还；
+    //    一张 6000×4000 的 canvas 就是 91MB，几十张堆积起来会把内存打爆
+    //    （表现为导入大图时进程被 OOM killer 杀掉）。
+    //    转成 ImageBitmap 后把尺寸清零即可立即释放。
+    if (result !== canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+    return result;
   }
 
   function getCurrentInputAdapter() {
@@ -2569,10 +2863,101 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     if (fitAfter) fitPreviewToViewport();
   }
 
-  async function decodeImage(file) {
+  // 预览/编辑用的最长边像素。
+  // 导入时按这个尺寸降采样：35 张 4000×3000 的照片解码后是 1.56GB 显存常驻，
+  // 会把浏览器进程直接拖垮（实测 20 张就被 OOM killer 杀掉）。
+  // 2000px 的依据：导出时最宽的一格是 A4 索引 600 DPI 的 1329px，仍有 1.5 倍余量，
+  // 常规导出画质无损；只有「原图级」才回到原始像素。
+  const PREVIEW_MAX_SIDE = 2000;
+
+  // 读取 EXIF Orientation（1~8）。
+  // 5~8 表示需要旋转 90°，显示方向的长边在「高度」方向 —— 降采样时必须给
+  // resizeHeight，否则竖图会被缩成 2000×2667，最长边反而超标。
+  async function readExifOrientation(file) {
+    if (file.type !== "image/jpeg") return 1;
+    try {
+      const buffer = await file.slice(0, 256 * 1024).arrayBuffer();
+      const view = new DataView(buffer);
+      if (view.byteLength < 4 || view.getUint16(0) !== 0xffd8) return 1;
+      let offset = 2;
+      while (offset + 4 <= view.byteLength) {
+        const marker = view.getUint16(offset);
+        const size = view.getUint16(offset + 2);
+        if (marker === 0xffe1 && offset + 10 <= view.byteLength && view.getUint32(offset + 4) === 0x45786966) {
+          return parseTiffOrientation(view, offset + 10, size - 8);
+        }
+        if ((marker & 0xff00) !== 0xff00) break;
+        offset += 2 + size;
+      }
+    } catch (error) {
+      // 读不到就按默认方向处理
+    }
+    return 1;
+  }
+
+  function parseTiffOrientation(view, tiffStart, tiffLength) {
+    if (tiffLength < 8 || tiffStart + tiffLength > view.byteLength) return 1;
+    const littleEndian = view.getUint16(tiffStart) === 0x4949;
+    const read16 = (o) => view.getUint16(o, littleEndian);
+    const read32 = (o) => view.getUint32(o, littleEndian);
+    const findIfd = (ifdOffset, wantedTag) => {
+      const base = tiffStart + ifdOffset;
+      if (base + 2 > view.byteLength) return null;
+      const count = read16(base);
+      for (let i = 0; i < count; i += 1) {
+        const entry = base + 2 + i * 12;
+        if (entry + 12 > view.byteLength) return null;
+        if (read16(entry) === wantedTag) return entry;
+      }
+      return null;
+    };
+    const ifd0 = read32(tiffStart + 4);
+    const entry = findIfd(ifd0, 0x0112);
+    if (!entry) return 1;
+    const value = read16(entry + 8);
+    return value >= 1 && value <= 8 ? value : 1;
+  }
+
+  // 带缩放的解码：createImageBitmap 的 resizeWidth/resizeHeight 是「解码器缩放」，
+  // 直接输出目标尺寸，不产生全尺寸中间缓冲 —— 这是省内存的关键。
+  async function decodeScaledImage(file, maxSide) {
+    const orientation = await readExifOrientation(file);
+    const preferHeight = orientation >= 5 && orientation <= 8;
+    const decodeBy = (byHeight) => createImageBitmap(file, {
+      imageOrientation: "from-image",
+      resizeQuality: "high",
+      ...(byHeight ? { resizeHeight: maxSide } : { resizeWidth: maxSide }),
+    });
+    try {
+      let bitmap = await decodeBy(preferHeight);
+      // 没有 EXIF 方向信息时可能给错了维度：最长边明显超标就换另一个维度重来
+      if (Math.max(bitmap.width, bitmap.height) > maxSide * 1.25) {
+        const retry = await decodeBy(!preferHeight);
+        bitmap.close();
+        bitmap = retry;
+      }
+      return bitmap;
+    } catch (error) {
+      // 兜底：浏览器不支持单边缩放 → 先全尺寸解码拿比例（立刻释放），再按比例缩放
+      const full = await createImageBitmap(file, { imageOrientation: "from-image" });
+      const ratio = full.width / full.height;
+      full.close();
+      const byHeight = ratio < 1;
+      return createImageBitmap(file, {
+        imageOrientation: "from-image",
+        resizeQuality: "high",
+        ...(byHeight
+          ? { resizeHeight: maxSide, resizeWidth: Math.max(1, Math.round(maxSide * ratio)) }
+          : { resizeWidth: maxSide, resizeHeight: Math.max(1, Math.round(maxSide / ratio)) }),
+      });
+    }
+  }
+
+  async function decodeImage(file, { maxSide = 0 } = {}) {
     // createImageBitmap 会应用 EXIF 方向，且不经过 base64，内存开销更小
     if (typeof createImageBitmap === "function") {
       try {
+        if (maxSide > 0) return await decodeScaledImage(file, maxSide);
         return await createImageBitmap(file, { imageOrientation: "from-image" });
       } catch (error) {
         // 落回 <img> 解码
@@ -2756,7 +3141,173 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     node.classList.toggle("is-live", Boolean(live));
   }
 
-  function updateStepChips() {
+  // ── 用途：胶片反转（A4 横向）/ 6 寸索引 ──────────────────────────────────
+  // 用途只做三件事：
+  //   ① 决定预览画什么（预览分流）
+  //   ② 决定导出尺寸（写回 exportPagePreset，导出逻辑本身不变）
+  //   ③ 6 寸时隐藏只对胶片条有意义的控件
+  // 「胶片反转」的所有排版/打印设置一律保持用户当前值，不做任何重置。
+  function getPurposeMode() {
+    const checked = document.querySelector('input[name="purposeMode"]:checked');
+    return checked ? checked.value : PURPOSE_NEGATIVE;
+  }
+
+  // 是否处于「网格索引」用途（6 寸 / 8 寸 / A4 索引）
+  function isGridPurpose() {
+    return GRID_PURPOSES.indexOf(getPurposeMode()) >= 0;
+  }
+
+  // 兼容旧名：网格索引用途
+  function isSixInchPurpose() {
+    return isGridPurpose();
+  }
+
+  // 当前网格用途对应的 presetId（胶片反转返回 null）
+  function getGridPresetId() {
+    return PURPOSE_TO_GRID_PRESET[getPurposeMode()] || null;
+  }
+
+  // 6 寸下隐藏：边字 / 齿孔 / 照片位置 / 片头 / 片尾 / 背景 / 胶片条阴影
+  const SIXINCH_HIDDEN_IDS = [
+    "showEdgeTextField",
+    "showSprocketsField",
+    "imageInSprocketsField",
+    "imageInEdgeTextField",
+    "showLeaderField",
+    "showTrailerField",
+    "backgroundStyleField",
+    "showStripShadowField",
+  ];
+
+  function applyPurposeVisibility() {
+    const grid = isGridPurpose();
+    const presetId = getGridPresetId();
+    const preset = presetId ? FilmIndex6Inch.getPreset(presetId) : null;
+
+    SIXINCH_HIDDEN_IDS.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.hidden = grid;
+    });
+    const logoField = document.getElementById("brandLogoFieldLeft");
+    if (logoField) logoField.hidden = !grid;
+    const hint = document.getElementById("purposeHint");
+    if (hint) {
+      hint.textContent = preset
+        ? `${preset.name} 索引 · ${preset.w} × ${preset.h} mm · 一张纸打印全部照片，最后一行右侧放品牌信息`
+        : "反转胶片：A4 横向，按胶片尺寸真实打印";
+    }
+    const chip = document.getElementById("stepChipPurpose");
+    if (chip) {
+      const cols = document.getElementById("columnsSelect");
+      setStepChip(
+        chip,
+        preset ? `${preset.name} 索引` : `胶片反转 · ${cols ? cols.value : 6} 张/行`,
+        true,
+      );
+    }
+  }
+
+  // 切换用途
+  function setPurposeMode(mode) {
+    const grid = GRID_PURPOSES.indexOf(mode) >= 0;
+    const presetId = PURPOSE_TO_GRID_PRESET[mode] || null;
+    const preset = presetId ? FilmIndex6Inch.getPreset(presetId) : null;
+
+    // 导出尺寸跟随用途（exportPagePreset 仍由导出逻辑使用，这里只是写值）
+    if (grid && preset) {
+      exportPagePreset.value = presetId;
+      // 6 寸 / 8 寸默认不勾真实尺寸；A4 索引默认勾
+      exportPhysical.checked = preset.physical;
+      if (preset.physical) {
+        const dpi = document.getElementById("exportDpi");
+        if (dpi) dpi.value = "300";
+        const margin = document.getElementById("physicalMargin");
+        if (margin) margin.value = "6";
+      }
+    } else {
+      exportPagePreset.value = "a4-landscape";
+      // 胶片反转的默认打印设置（方案 A：切回时强制设成这一组）
+      exportPhysical.checked = true;
+      const dpi = document.getElementById("exportDpi");
+      if (dpi) dpi.value = "300";
+      const margin = document.getElementById("physicalMargin");
+      if (margin) margin.value = "6";
+    }
+    applyPurposeVisibility();
+    if (grid) {
+      applySixInchColumnsControl();
+    } else if (columnsSelect.value === "auto") {
+      // 切回胶片反转：胶片反转没有「自动」概念，恢复用户最后手选的具体值
+      columnsSelect.value = String(state.manualColumnsLast || 6);
+    }
+    updatePhysicalControls();
+    updateExportFormatControls();
+    updateExportMemoryWarning();
+    if (exportPhysical.checked && !grid) updatePhysicalReadout();
+    render();
+    // 画布尺寸变了，重新适配视口宽度
+    fitPreviewToViewport();
+  }
+
+  // 网格索引：提示「每行张数」的实际排版结果
+  // 🔴 铁律：绝不能改写用户选的列数（select.value）。
+  //    用户指定的值若放不下，引擎会换一个可行的列数来排版，
+  //    这里只把「实际用了多少列」讲清楚，由用户自己决定要不要改。
+  function syncGridColumns() {
+    const count = state.items.length;
+    if (!count || !isGridPurpose()) return false;
+    const layout = getSixInchExportLayout(count, 1).layout;
+    const actual = layout.actualColumns || layout.columns;
+    const select = document.getElementById("columnsSelect");
+    const wanted = Number(select && select.value) || 0;
+    const hint = document.getElementById("columnsHint");
+    if (hint) {
+      const slot = layout.brandSlot || 1;
+      const pid = getGridPresetId();
+      const pname = pid ? FilmIndex6Inch.getPreset(pid).name : "索引";
+      const fillH = Math.round((layout.gridH / layout.areaH) * 100);
+      if (wanted === 0) {
+        // 自动模式：告知挑了几列、填满了多少
+        hint.textContent = `${pname}索引：自动 ${layout.rows} 行 × ${actual} 列，占满 ${fillH}%`;
+      } else if (wanted !== actual) {
+        // 用户选的列数排不下 → 说清楚为什么，并告知实际用了多少格
+        hint.textContent = `每行 ${wanted} 格放不下 ${count} 张（末行 ${slot} 格留给品牌板），`
+          + `已按 ${actual} 格/行排版`;
+      } else {
+        hint.textContent = `${pname}索引：每行 ${actual} 格（末行 ${slot} 格留给品牌板）`;
+      }
+      hint.hidden = false;
+    }
+    return false;
+  }
+
+  // 弹窗里的只读输出信息
+  function updateExportPurposeInfo() {
+    const el = document.getElementById("exportPurposeInfo");
+    if (!el) return;
+    const count = state.items.length;
+    if (!count) { el.textContent = "请先添加照片"; return; }
+    const items = getSortedItems();
+    if (isGridPurpose()) {
+      const layout = getSixInchExportLayout(count, 1).layout;
+      const cap = layout.cells.filter((c) => !c.blocked).length;
+      const gridDpi = loadPrintSettings().dpi || 300;
+      el.textContent = `${layout.presetName} 索引 · ${layout.pageWmm} × ${layout.pageHmm} mm 横向 · ${gridDpi} DPI · ${layout.rows} 行 × ${layout.columns} 列 · ${layout.canvasW.toLocaleString()} × ${layout.canvasH.toLocaleString()} px · 一页最多 ${cap} 张（当前 ${count} 张）`;
+    } else {
+      const cols = Number(document.getElementById("columnsSelect").value) || 6;
+      el.textContent = `胶片反转 · A4 横向 297 × 210 mm · 每行 ${cols} 张 · 当前 ${count} 张`;
+    }
+  }
+
+// 品牌 logo 取值：左侧边栏的 brandLogoLeft 为准（弹窗里的旧选择器已移除）
+  function getBrandLogoValue() {
+    const left = document.getElementById("brandLogoLeft");
+    if (left && left.value) return left.value;
+    const legacy = document.getElementById("brandLogo");
+    return (legacy && legacy.value) || "full blue";
+  }
+
+function updateStepChips() {
     const itemCount = state.items.length;
     setStepChip(stepChipSource, itemCount ? `${itemCount} 张` : "未导入", itemCount > 0);
 
@@ -2764,7 +3315,13 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     setStepChip(stepChipStock, process || "—", Boolean(process));
 
     const format = getFormat();
-    const columns = Number(columnsSelect.value) || 6;
+    // 网格索引用的是「自动」时，chip 要显示引擎实际选的列数，
+    // 否则会出现「chip 写 6 张/行、实际排 7 列」的不一致。
+    let columns = Number(columnsSelect.value) || 6;
+    if (isGridPurpose() && state.items.length) {
+      const gridLayout = getSixInchExportLayout(state.items.length, 1).layout;
+      columns = gridLayout.actualColumns || gridLayout.columns;
+    }
     setStepChip(stepChipFormat, `${STEP_FORMAT_LABELS[format.id] || format.id} · ${columns} 张/行`, true);
 
     const lookCount = [
@@ -2780,6 +3337,84 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     setStepChip(stepChipStockLib, `${state.customStocks.length} 个自定义`, state.customStocks.length > 0);
     setStepChip(stepChipAdvanced, `尺寸 ${frameWidthInput.value}`, true);
   }
+  // 6 寸预览：把 6 寸布局画到预览画布（所见即所得）
+  function drawSixInchPreview(items) {
+    const prevCanvas = activeCanvas;
+    const prevCtx = ctx;
+    const canvas = previewCanvas;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const format = getFormat();
+    const ratio = format && format.ratio ? format.ratio : 36 / 24;
+
+    // 预览画布的 DPI：按容器实际宽度反推，保证画布像素 ≥ 显示像素 × 2（高清屏适配）
+    // 只用 96 DPI 会导致画布很小、被 CSS 放大后发虚。
+    const containerW = previewWrap.clientWidth || 800;
+    const targetCssW = Math.max(240, containerW - 56);
+    const previewDpi = Math.round(clamp((targetCssW * 2 * 25.4) / FilmIndex6Inch.PAGE_W_MM, 96, 600));
+
+    const layout = FilmIndex6Inch.computeLayout(items.length, {
+      dpi: previewDpi,
+      columns: getSixInchColumns(),
+      ratio,
+      preset: getGridPresetId() || "6inch",
+    });
+    drawSixInchPreview.rowCount = layout.rows;
+    drawSixInchPreview.dpi = previewDpi;
+    // 缓存布局：拖拽落点计算必须和画布用同一套坐标系
+    drawSixInchPreview.lastLayout = layout;
+
+    canvas.width = layout.canvasW;
+    canvas.height = layout.canvasH;
+    activeCanvas = canvas;
+    ctx = context;
+    try {
+      drawSheetBackground(layout.canvasW, layout.canvasH, {
+        x: 0, y: 0, width: layout.canvasW, height: layout.canvasH,
+      }, {
+        lightTable: false,
+        backgroundMode: "white",
+        preview: true,
+      });
+      FilmIndex6Inch.draw(context, items, layout, getSixInchBrandOptions());
+    } catch (error) {
+      console.error("6 寸预览绘制失败", error);
+    } finally {
+      activeCanvas = prevCanvas;
+      ctx = prevCtx;
+    }
+    // 命中数据：把每个非品牌板格子登记进 frameRects，
+    // 这样预览里的「拖拽换位置 / 右键菜单 / 悬停高亮」与胶片反转行为一致。
+    // 只读不改任何绘制逻辑。
+    state.frameRects = [];
+    let hitIndex = 0;
+    for (const cell of layout.cells) {
+      if (cell.blocked) continue;
+      if (hitIndex >= items.length) break;
+      const item = items[hitIndex];
+      hitIndex += 1;
+      if (!item) continue;
+      state.frameRects.push({
+        id: item.id,
+        item,
+        central: { x: cell.x, y: cell.y, w: cell.w, h: cell.h },
+        regions: [{ x: cell.x, y: cell.y, w: cell.w, h: cell.h }],
+        bounds: { x: cell.x, y: cell.y, w: cell.w, h: cell.h },
+      });
+    }
+    drawGridDropIndicator(layout);
+    applyPreviewZoom();
+
+    // logo 是异步加载的：首次预览时若还没就绪，加载完成后重绘一次
+    if (!drawSixInchPreview.logoReady) {
+      FilmIndex6Inch.ensureLogoReady(getBrandLogoValue()).then(() => {
+        drawSixInchPreview.logoReady = true;
+        if (isSixInchPurpose() && state.items.length) drawSixInchPreview(getSortedItems());
+      });
+    }
+  }
+
   function render() {
     updateStepChips();
     if (!state.items.length) {
@@ -2788,8 +3423,25 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     }
 
     pruneSelectedFrames();
-    const options = getRenderOptions(1);
     const items = getSortedItems();
+
+    // 6 寸索引：预览走独立的网格布局（所见即所得）
+    if (isSixInchPurpose()) {
+      drawSixInchPreview(items);
+      const rowCount = drawSixInchPreview.rowCount || 1;
+      const presetId = getGridPresetId();
+      const presetName = presetId ? FilmIndex6Inch.getPreset(presetId).name : "索引";
+      statusTitle.textContent = `${presetName} 索引 ${rowCount} 行已生成`;
+      imageCounter.textContent = `${items.length} 张`;
+      emptyState.classList.add("is-hidden");
+      previewWrap.classList.remove("is-empty", "is-loading");
+      exportButton.disabled = state.isExporting && !state.exportHydrationItems;
+      syncGridColumns();
+      updateExportPurposeInfo();
+      return;
+    }
+
+    const options = getRenderOptions(1);
     drawIndex(items, options);
 
     const rowCount = buildRows(items.length, options).length;
@@ -3068,10 +3720,17 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   // blur 底的边缘可能被照片覆盖，退回整幅降采样统计；探针自身异常绝不阻断正常导出。
   function probeExportCanvas(
     canvas,
-    { transparent = false, blurred = false, multiFrame = true } = {},
+    { transparent = false, blurred = false, multiFrame = true, grid = false } = {},
   ) {
     try {
       const coverage = sampleCanvasCoverage(canvas);
+      // 6 寸网格模式：整幅是全彩照片缩略图 + 白底，没有「深色片基」概念。
+      // bright 占比天然接近 1（白底），black 天然接近 0，
+      // 所以只判两件事：画布有实际绘制（opaque），且不是纯白一片。
+      if (grid) {
+        const ok = coverage.opaque >= 0.02 && coverage.black < 0.995;
+        return { ok, ...coverage };
+      }
       // 照片纹理上传失败、矢量填充仍成功时：深色片基/帧底在、亮内容几乎没有。
       // 阈值按整页（多行+纸底间隙）校准；单帧片基占比天然高，不做此项判定。
       const framesAllBlack = multiFrame && coverage.black >= 0.5 && coverage.bright < 0.3;
@@ -3297,12 +3956,18 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   }
 
   // 导出 PDF：把导出画布按页裁切后逐页嵌入
-  async function exportPdfFromCanvas(outputCanvas, layout, mimeHint) {
+  async   function exportPdfFromCanvas(outputCanvas, layout, mimeHint) {
     const preset = exportPagePreset.value;
-    const isA4 = preset !== "free";
+    const gridPreset = FilmIndex6Inch.isGridPreset(preset) ? FilmIndex6Inch.getPreset(preset) : null;
+    const isSixInch = Boolean(gridPreset);
+    const isA4 = preset !== "free" && !isSixInch;
     let pageWmm;
     let pageHmm;
-    if (isA4) {
+    if (gridPreset) {
+      // 网格索引：PDF 页面固定为该尺寸横向
+      pageWmm = gridPreset.w;
+      pageHmm = gridPreset.h;
+    } else if (isA4) {
       const landscape = preset.endsWith("-landscape");
       pageWmm = landscape ? 297 : 210;
       pageHmm = landscape ? 210 : 297;
@@ -3378,8 +4043,9 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
   // 按当前控件状态构建输出方案（导出与打印共用）
   function buildArtworkPlan(itemCount) {
-    const isPhysical = exportPhysical.checked;
-    const isFullResolution = !isPhysical && exportScale.value === "full";
+    const isSixInch = FilmIndex6Inch.isGridPreset(exportPagePreset.value);
+    const isPhysical = exportPhysical.checked && !isSixInch;
+    const isFullResolution = !isPhysical && !isSixInch && exportScale.value === "full";
     const scale = isFullResolution
       ? getFullResolutionScale(state.items)
       : isPhysical
@@ -3420,6 +4086,50 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     return outputCanvas;
   }
 
+  // 是否请求了「原图级」导出（网格索引的格子尺寸统一，不支持原图级放大）
+  function isFullResolutionExportRequested() {
+    if (FilmIndex6Inch.isGridPreset(exportPagePreset.value)) return false;
+    if (exportPhysical.checked) return false;
+    return exportScale.value === "full";
+  }
+
+  // 「原图级」导出：本地照片必须回到原始像素（常驻内存的是 2000px 降采样版）。
+  // 全分辨率原图要全部驻留，显存占用 = Σ(宽×高×4)，先预检再决定要不要升。
+  async function upgradeLocalsForFullResolution() {
+    const locals = state.items.filter((item) => !item.remote && item.file && !item.fullResolution);
+    if (!locals.length) return true;
+
+    const LIMIT_BYTES = 900 * 1024 * 1024;   // 900MB 预留余量
+    let totalBytes = 0;
+    for (const item of locals) {
+      const dims = await readJpegDimensions(item.file);
+      // 读不到尺寸时按降采样版 ×4 保守估算（宁可高估也不要低估）
+      const width = dims ? dims.width : item.originalWidth * 4;
+      const height = dims ? dims.height : item.originalHeight * 4;
+      totalBytes += width * height * 4;
+    }
+    if (totalBytes > LIMIT_BYTES) {
+      showNotice(
+        `原图级导出需要约 ${Math.round(totalBytes / 1024 / 1024)}MB 显存，`
+        + `当前 ${locals.length} 张照片超出安全范围，可能闪退。建议改用 3x 或降低打印 DPI`,
+        8000,
+      );
+      return false;
+    }
+
+    let done = 0;
+    for (const item of locals) {
+      try {
+        await upgradeLocalItemToFull(item);
+      } catch (error) {
+        console.error("原图解码失败", item.name, error);
+      }
+      done += 1;
+      statusTitle.textContent = `正在准备原图 ${done}/${locals.length}...`;
+    }
+    return true;
+  }
+
   // 原图准备（导出与打印共用）：全部获取原图后返回照片列表；失败返回 null
   async function prepareArtworkSources() {
     state.exportHydrationItems = [...state.items];
@@ -3436,6 +4146,14 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       render();
       return null;
     }
+    // 「原图级」：本地照片也要回到原始像素
+    if (isFullResolutionExportRequested()) {
+      const ok = await upgradeLocalsForFullResolution();
+      if (!ok) {
+        render();
+        return null;
+      }
+    }
     return getSortedItems();
   }
 
@@ -3451,6 +4169,11 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       const items = await prepareArtworkSources();
       if (!items) return;
 
+      // 6 寸模式：确保 logo 已加载完成，避免品牌板画出空白
+      if (FilmIndex6Inch.isGridPreset(exportPagePreset.value) && window.FilmIndex6Inch) {
+        await FilmIndex6Inch.ensureLogoReady(getBrandLogoValue());
+      }
+
       render();
       exportButton.textContent = "正在导出...";
       exportButton.disabled = true;
@@ -3458,7 +4181,8 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       let plan;
       try {
         plan = buildArtworkPlan(state.items.length);
-      } catch {
+      } catch (error) {
+        console.error("导出布局计算失败", error);
         showNotice("导出失败：无法计算有效的输出尺寸");
         return;
       }
@@ -3517,6 +4241,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       const exportProbe = probeExportCanvas(outputCanvas, {
         transparent: options.backgroundMode === "transparent",
         blurred: options.backgroundMode === "blur" && !state.lightTable.active,
+        grid: Boolean(layout.sixInch),
       });
       if (!exportProbe.ok) {
         console.error("导出画布像素校验未通过，疑似显存/内存不足导致静默渲染失败", exportProbe);
@@ -3605,6 +4330,8 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       state.isExporting = false;
       state.exportCancelled = false;
       state.exportHydrationItems = null;
+      // 把临时升级到原图的本地照片降回降采样版，释放显存
+      downgradeAllLocalFullResolutions();
       setSourceEditingLocked(false);
       updateFrameModeControls();
       updateExportFormatControls();
@@ -3625,7 +4352,14 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
       let pageSize;
       let sheets;
-      if (preset !== "free") {
+      if (FilmIndex6Inch.isGridPreset(preset)) {
+        // 网格索引：纸张固定为该尺寸横向
+        const gp = FilmIndex6Inch.getPreset(preset);
+        const pw = gp.w;
+        const ph = gp.h;
+        pageSize = `${pw}mm ${ph}mm`;
+        sheets = [{ pw, ph, top: 0 }];
+      } else if (preset !== "free") {
         const landscape = preset.endsWith("-landscape");
         const pw = landscape ? 297 : 210;
         const ph = landscape ? 210 : 297;
@@ -3709,6 +4443,11 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       const items = await prepareArtworkSources();
       if (!items) return;
 
+      // 6 寸模式：确保 logo 已加载完成，避免品牌板画出空白
+      if (FilmIndex6Inch.isGridPreset(exportPagePreset.value) && window.FilmIndex6Inch) {
+        await FilmIndex6Inch.ensureLogoReady(getBrandLogoValue());
+      }
+
       render();
       exportButton.textContent = "正在生成 PDF...";
       exportButton.disabled = true;
@@ -3716,7 +4455,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       let plan;
       try {
         plan = buildArtworkPlan(state.items.length);
-      } catch {
+      } catch (error) {
+        console.error("导出布局计算失败", error);
         showNotice("导出失败：无法计算有效的输出尺寸");
         return;
       }
@@ -3747,6 +4487,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       const probe = probeExportCanvas(outputCanvas, {
         transparent: false,
         blurred: options.backgroundMode === "blur" && !state.lightTable.active,
+        grid: Boolean(layout.sixInch),
       });
       if (!probe.ok) {
         console.error("PDF 画布像素校验未通过", probe);
@@ -3778,6 +4519,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       state.isExporting = false;
       state.exportCancelled = false;
       state.exportHydrationItems = null;
+      // 把临时升级到原图的本地照片降回降采样版，释放显存
+      downgradeAllLocalFullResolutions();
       setSourceEditingLocked(false);
       updateFrameModeControls();
       updateExportFormatControls();
@@ -3798,6 +4541,11 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     try {
       const items = await prepareArtworkSources();
       if (!items) return;
+
+      // 6 寸模式：确保 logo 已加载完成，避免品牌板画出空白
+      if (FilmIndex6Inch.isGridPreset(exportPagePreset.value) && window.FilmIndex6Inch) {
+        await FilmIndex6Inch.ensureLogoReady(getBrandLogoValue());
+      }
 
       render();
       exportButton.textContent = "正在准备打印...";
@@ -3838,6 +4586,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       const printProbe = probeExportCanvas(outputCanvas, {
         transparent: options.backgroundMode === "transparent",
         blurred: options.backgroundMode === "blur" && !state.lightTable.active,
+        grid: Boolean(layout.sixInch),
       });
       if (!printProbe.ok) {
         console.error("打印画布像素校验未通过，疑似显存/内存不足导致静默渲染失败", printProbe);
@@ -3860,6 +4609,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       state.isExporting = false;
       state.exportCancelled = false;
       state.exportHydrationItems = null;
+      // 把临时升级到原图的本地照片降回降采样版，释放显存
+      downgradeAllLocalFullResolutions();
       setSourceEditingLocked(false);
       updateFrameModeControls();
       updateExportFormatControls();
@@ -4127,7 +4878,20 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
   function getPhysicalExportLayout(itemCount) {
     const { calibration, dpi, margin: marginMm } = loadPrintSettings();
     const preset = exportPagePreset.value;
-    const isA4 = preset !== "free";
+    // 6 寸模式有独立布局，不走物理胶片条打包器
+    const isA4 = preset !== "free" && !FilmIndex6Inch.isGridPreset(preset);
+    // 6 寸只有横向一种（152 × 102 mm），且走独立网格布局，
+    // 绝不能落进这里的 A4 方向分支（否则会被算成竖向）。
+    if (FilmIndex6Inch.isGridPreset(preset)) {
+      const six = getSixInchExportLayout(itemCount, 1);
+      return {
+        options: six.options,
+        layout: six.layout,
+        meta: six.meta,
+        physical: false,
+        sixInch: true,
+      };
+    }
     const format = getFormat();
     const is120 = format.family === "120";
     const isHalfFrame = isHalfFrameMode();
@@ -4281,6 +5045,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
 
   function createExportPageLayout(contentLayout, preset = "free") {
     if (preset === "free") return contentLayout;
+    // 6 寸模式有独立布局（网格缩略图 + 品牌板），不走 A4 比例换算
+    if (FilmIndex6Inch.isGridPreset(preset)) return contentLayout;
 
     const pageRatio = preset.endsWith("-landscape")
       ? Math.SQRT2
@@ -4341,7 +5107,101 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     return false;
   }
 
+  // ── 6 寸胶片索引模式 ────────────────────────────────────────────────
+  const SIX_INCH_MM_PER_INCH_COLUMNS = null; // 占位，保持结构清晰
+
+  function getSixInchBrandOptions() {
+    const stock = resolveStock(getActiveStock());
+    return {
+      rollName: (stock && stock.name) || "",
+      logoValue: getBrandLogoValue(),
+      dateStamp: getLocalDateStamp().replace(/-/g, ""),
+    };
+  }
+
+  // 记住用户在网格索引下手选的具体列数（切回胶片反转时恢复）
+  function rememberManualColumns() {
+    const select = document.getElementById("columnsSelect");
+    if (!select) return;
+    const raw = select.value;
+    if (raw && raw !== "auto") state.manualColumnsLast = Number(raw) || 6;
+  }
+
+  // 网格索引：把「每行张数」控件切到可用状态
+  // 🔴 不改写用户的值（只在超出 4~8 范围时收敛），提示文案由 syncGridColumns 统一维护。
+  function applySixInchColumnsControl() {
+    const wideSpecField = document.getElementById("wideSpecField");
+    const halfField = document.getElementById("halfFrameModeField");
+    if (wideSpecField) wideSpecField.hidden = true;
+    if (halfField) halfField.hidden = true;
+    columnsSelect.disabled = false;
+
+    // 「自动」是合法值，原样保留；具体数值仅在越界时收敛
+    const raw = columnsSelect.value;
+    if (raw !== "auto" && raw !== "") {
+      const current = Number(raw) || 6;
+      const clamped = Math.max(4, Math.min(8, current));
+      if (clamped !== current) columnsSelect.value = String(clamped);
+    }
+  }
+
+  // 网格索引的列数：
+  //   "auto" → 返回 0，交给引擎自动挑「纵向填充率最高」的列数（尽量占满整页）
+  //   数字   → 用户指定，严格按用户值
+  // 🔴 与胶片反转共用同一个 select，所以要记住用户最后选的具体值，
+  //    切回胶片反转时恢复（胶片反转没有"自动"概念）。
+  function getSixInchColumns() {
+    const select = document.getElementById("columnsSelect");
+    const raw = select ? select.value : "auto";
+    if (raw === "auto" || raw === "" || raw === null) return 0;
+    // 上限 8：再密格子太小，且品牌板固定高度会顶出纸面
+    return Math.max(4, Math.min(8, Math.round(Number(raw) || 6)));
+  }
+
+  function getSixInchExportLayout(itemCount, scale, presetId) {
+    // 网格索引的导出画布密度由「打印 DPI」决定（与胶片反转同一套设置）。
+    // 原来这里写死 300，导致 6/8/A4 索引的输出质量下拉形同虚设、分辨率无法调整。
+    const dpi = loadPrintSettings().dpi || 300;
+    // 格子比例 = 当前选中的胶片画幅比例（135 全画幅 = 36/24 = 3:2），
+    // 直接沿用胶卷的画幅设置，不按照片像素另行计算。
+    const format = getFormat();
+    const ratio = format && format.ratio ? format.ratio : 36 / 24;
+    const preset = presetId || getGridPresetId() || "6inch";
+    const layout = {
+      // 列数沿用左侧「画幅与排列 → 每行张数」，与胶卷反转保持同一套控制
+      ...FilmIndex6Inch.computeLayout(itemCount, { dpi, columns: getSixInchColumns(), ratio, preset }),
+      sixInch: true,
+    };
+    return {
+      options: { backgroundMode: "white" },
+      contentLayout: layout,
+      pageLayout: layout,
+      layout,
+      meta: {
+        columns: layout.columns,
+        rows: layout.rows,
+        dpi,
+        pageCount: 1,
+        ratio,
+        presetId: layout.presetId,
+        presetName: layout.presetName,
+        pageWmm: layout.pageWmm,
+        pageHmm: layout.pageHmm,
+        // 6 寸没有胶片条校准概念，填中性值防止调用方读到 undefined
+        calibration: 1,
+        frameMm: 0,
+        pageMm: { w: 152, h: 102 },
+      },
+      sixInch: true,
+    };
+  }
+
+
   function getExportRenderLayout(itemCount, scale, preset = exportPagePreset.value) {
+    // 6 寸胶片索引：独立布局（网格缩略图 + 右下角品牌板）
+    if (FilmIndex6Inch.isGridPreset(preset)) {
+      return getSixInchExportLayout(itemCount, scale);
+    }
     const candidates = preset === "free" ? null : getAdaptiveExportColumns();
     const columnChoices = candidates || [null];
     let best = null;
@@ -4395,6 +5255,16 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
 
   // 绘制体：假定调用方已设好 ctx 变换。cullRect 为当前坐标空间内的可见区域（用于背景填充与整行剔除）。
   function paintIndex(items, options, layout, { cullRect, buildHitData }) {
+    // 6 寸模式：独立渲染路径（网格缩略图 + 右下角品牌板）
+    if (layout.sixInch) {
+      drawSheetBackground(layout.canvasW, layout.canvasH, cullRect, {
+        lightTable: false,
+        backgroundMode: "white",
+        preview: activeCanvas === previewCanvas,
+      });
+      FilmIndex6Inch.draw(ctx, items, layout, getSixInchBrandOptions());
+      return;
+    }
     drawSheetBackground(layout.canvasW, layout.canvasH, cullRect, {
       lightTable: state.lightTable.active,
       backgroundMode: options.backgroundMode,
@@ -4907,6 +5777,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
   }
 
   function showNotice(message, duration = 5200) {
+    const noticeEl = getNoticeEl();
+    if (!noticeEl) return;
     noticeEl.textContent = message;
     noticeEl.classList.add("is-visible");
     window.clearTimeout(state.noticeTimer);
@@ -5376,7 +6248,9 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     const hydrationIds = new Set();
     snapshots.forEach((snapshot) => {
       [snapshot.item, snapshot.backgroundEnabled ? snapshot.backgroundItem : null].forEach((item) => {
-        if (!item || hydrationIds.has(item.id)) return;
+        // 只处理网盘照片：网盘的原图必须先下载下来。
+        // 本地照片走「逐张升级 → 导出 → 降回」，批量时全部升级会撑爆显存。
+        if (!item || !item.remote || hydrationIds.has(item.id)) return;
         hydrationIds.add(item.id);
         hydrationItems.push(item);
       });
@@ -5434,14 +6308,31 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     downloadBlob(blob, getFrameExportFilename(snapshot, extension));
   }
 
+  // 单帧导出涉及的本地球（不含网盘）
+  function localItemsOfSnapshot(snapshot) {
+    return [snapshot.item, snapshot.backgroundEnabled ? snapshot.backgroundItem : null]
+      .filter((entry) => entry && !entry.remote);
+  }
+
   async function runSingleFrameExport(exportState) {
     const item = validateFrameExportSnapshot(exportState);
     frameExportApply.textContent = item.remote?.quality !== "full" ? "正在获取原图…" : "正在导出…";
     updateFrameExportControls();
     await ensureFrameExportOriginals([exportState], exportState, "单帧导出");
-    frameExportApply.textContent = "正在导出…";
-    frameExportStatus.textContent = "正在绘制片基单帧";
-    await exportFrameSnapshot(exportState, exportState);
+    // 本地照片：单张升级到原始像素（这是「下载原图」在本地场景的对应能力）
+    const locals = localItemsOfSnapshot(exportState);
+    for (const local of locals) {
+      await ensureOriginal(local, "单帧导出");
+    }
+    try {
+      frameExportApply.textContent = "正在导出…";
+      frameExportStatus.textContent = "正在绘制片基单帧";
+      await exportFrameSnapshot(exportState, exportState);
+    } finally {
+      for (const local of locals) {
+        await downgradeLocalItem(local);
+      }
+    }
     showNotice(`已导出第 ${exportState.frameNumber} 帧`);
     exportState.busy = false;
     closeFrameExportModal();
@@ -5456,7 +6347,20 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       if (exportState.cancelled) throw new DOMException("Aborted", "AbortError");
       frameExportApply.textContent = `正在导出 ${index + 1}/${exportState.snapshots.length}`;
       frameExportStatus.textContent = `正在导出第 ${index + 1} / ${exportState.snapshots.length} 帧`;
-      await exportFrameSnapshot(exportState.snapshots[index], exportState);
+      // 逐张升级到原始像素 → 导出这一帧 → 立刻降回。
+      // 全部升级的话 35 张 4000×3000 就是 1.6GB 显存，会被 OOM killer 杀掉。
+      const snapshot = exportState.snapshots[index];
+      const locals = localItemsOfSnapshot(snapshot);
+      for (const local of locals) {
+        await ensureOriginal(local, "批量导出");
+      }
+      try {
+        await exportFrameSnapshot(snapshot, exportState);
+      } finally {
+        for (const local of locals) {
+          await downgradeLocalItem(local);
+        }
+      }
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     showNotice(`已导出 ${exportState.snapshots.length} 帧`);
@@ -5503,6 +6407,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       }
     } finally {
       state.isExporting = false;
+      downgradeAllLocalFullResolutions();
       setSourceEditingLocked(false);
       updateFrameModeControls();
       updateExportFormatControls();
@@ -5760,7 +6665,18 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     state.cropRequestGeneration += 1;
     cropModal.hidden = true;
     document.body.style.overflow = "";
+    const cropItemId = state.cropState ? state.cropState.itemId : null;
     state.cropState = null;
+    // 裁切时临时升级到了原图，这里降回降采样版（编辑结果已重新套用，不会丢）
+    if (cropItemId !== null && cropItemId !== undefined) {
+      const item = state.items.find((entry) => entry.id === cropItemId);
+      if (item && item.fullResolution) {
+        downgradeLocalItem(item).then(() => {
+          render();
+          renderPhotoList();
+        });
+      }
+    }
   }
 
   function updateCropOverlay() {
@@ -6091,11 +7007,34 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     if (!state.items.length) setFilmStageState("reading");
     exportButton.disabled = true;
 
-    const loaded = await Promise.allSettled(imageFiles.map(readImageFile));
-    const succeeded = loaded
-      .filter((result) => result.status === "fulfilled")
-      .map((result) => result.value);
-    const failed = loaded.length - succeeded.length;
+    // ── 并发限流 ────────────────────────────────────────────────
+    // 大图（6000×4000）解码成位图约 91MB，若 N 张同时解码会瞬时申请
+    // N×91MB 的系统内存（走浏览器图像解码服务，不在 JS 堆里，
+    // 所以 performance.memory 看不出问题），最终被 OOM killer 杀掉。
+    // 原程序在「取原图」「网盘导入」两条路径都用 worker 池限流（3~4 个），
+    // 本地导入这条路径漏了，这里按同一范式补上。
+    const IMPORT_CONCURRENCY = 3;
+    const succeeded = [];
+    let nextIndex = 0;
+    let completed = 0;
+    const worker = async () => {
+      while (nextIndex < imageFiles.length) {
+        const file = imageFiles[nextIndex++];
+        try {
+          succeeded.push(await readImageFile(file));
+        } catch (error) {
+          console.error("导入照片失败", file && file.name, error);
+        } finally {
+          completed += 1;
+          // 进度提示：让等待可见，避免误以为卡死
+          statusTitle.textContent = `正在读取扫描件 ${completed}/${imageFiles.length}...`;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(IMPORT_CONCURRENCY, imageFiles.length) }, worker),
+    );
+    const failed = imageFiles.length - succeeded.length;
 
     // 插入模式：在指定帧前插入
     if (insertBeforeId !== null) {
@@ -6119,7 +7058,22 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
 
     render();
     renderPhotoList();
-    await rebuildAllItemSources(true);
+    // 🔴 导入时不再重复 rebuildAllItemSources：
+    //    readImageFile 里已经建好每张图的 source（裁切/自动旋转都在那里做过），
+    //    这里再整体重建一遍 = 每张图多做一次 canvas 旋转，
+    //    实测比解码还慢一倍（10 张多花 7.5 秒、峰值多占 916MB）。
+    //    只需要做 rebuildAllItemSources 的收尾动作。
+    finishReprocessAfterImport();
+  }
+
+  // 导入后的收尾：与 rebuildAllItemSources 的尾部一致，但不做重复重建
+  function finishReprocessAfterImport() {
+    state.reprocessGeneration += 1;
+    previewWrap.classList.remove("is-loading");
+    exportButton.disabled = false;
+    render();
+    renderPhotoList();
+    fitPreviewToViewport();
   }
 
   // ---- 胶卷型号：数据层 + 自定义型号面板 ----
@@ -7127,4 +8081,27 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
   // 确保裁切模态框和菜单初始状态为隐藏
   cropModal.hidden = true;
   frameMenu.hidden = true;
+
+  // 用途初始化：默认「胶片反转」，A4 横向 + 真实尺寸打印
+  applyPurposeVisibility();
+  updateExportPurposeInfo();
+
+  // 左上角品牌标识：加载 hollow blue logo（与 6 寸品牌板同一套图标）
+  // 注意：这段代码在本 IIFE 执行时 FilmIndex6Inch 可能还没加载完，
+  // 所以要等到 window.load 再挂，确保 logo 数据已就绪。
+  function mountBrandMark() {
+    const img = document.getElementById("brandMarkLogo");
+    if (!img || !window.FilmIndex6Inch) return;
+    const src = FilmIndex6Inch.getLogoSrc("hollow blue");
+    if (!src) return;
+    img.addEventListener("load", () => img.classList.add("is-ready"), { once: true });
+    img.addEventListener("error", () => { img.style.display = "none"; }, { once: true });
+    img.src = src;
+  }
+
+  if (document.readyState === "complete") {
+    mountBrandMark();
+  } else {
+    window.addEventListener("load", mountBrandMark, { once: true });
+  }
 })();
