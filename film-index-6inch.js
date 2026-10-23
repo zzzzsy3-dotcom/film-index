@@ -85,6 +85,9 @@
     return String(value || "full blue").trim();
   }
 
+  // logo 一律取 base64 内嵌版（见 film-index-logos.js）。
+  // 部署目录已完全平铺，不再携带 logos/*.png —— 外链图片在 file:// 下会污染
+  // canvas 导致 toBlob 失败，下面那行外链仅作理论兜底，正常不会走到。
   function getLogoSrc(value) {
     const key = getLogoKey(value);
     const embedded = global.FilmIndexLogos && global.FilmIndexLogos[key];

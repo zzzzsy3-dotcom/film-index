@@ -16,6 +16,8 @@
   const dropZone = document.getElementById("dropZone");
   const previewWrap = document.getElementById("previewWrap");
   const previewCanvas = document.getElementById("previewCanvas");
+  const loadBar = document.getElementById("loadBar");
+  const loadBarFill = document.getElementById("loadBarFill");
   const emptyState = document.getElementById("emptyState");
   const statusTitle = document.getElementById("statusTitle");
   const imageCounter = document.getElementById("imageCounter");
@@ -465,6 +467,45 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     filmStage.dataset.filmState = nextState;
     filmTitle.textContent = next.title;
     filmDescription.textContent = next.description;
+  }
+
+  // ---- 加载进度条 ----
+  // 进度条贴在预览面板上沿（.load-bar），不再用画布下方的扫光条：
+  // 旧实现是 .preview-wrap.is-loading::after，它是伪元素、排在 <canvas>
+  // 之后，会掉到画布下方的空白区；而且是无限循环动画，跟真实完成度无关，
+  // 看起来就是「一条莫名一直滑动的线」。
+  // 现在：导入 = 按 completed/total 真实填充；重处理（无总数）= 扫光。
+
+  // 开始显示进度条。sweep=true 表示总量未知（裁切 / 原图升级等重处理）。
+  function beginLoading(sweep = false) {
+    previewWrap.classList.add("is-loading");
+    previewWrap.classList.toggle("is-sweep", !!sweep);
+    // 先关掉过渡再归零，避免「从上次进度缩回起点」的多余动画
+    loadBarFill.style.transition = "none";
+    loadBarFill.style.width = sweep ? "100%" : "0%";
+    void loadBarFill.offsetWidth;
+    loadBarFill.style.transition = "";
+    syncLoadBarOffset();
+  }
+
+  // 定量更新：percent 为 0~100 的数字
+  function updateLoadingProgress(percent) {
+    if (!percent && percent !== 0) return;
+    const clamped = Math.max(0, Math.min(100, percent));
+    loadBarFill.style.width = `${clamped.toFixed(1)}%`;
+  }
+
+  // 结束：移除 is-loading 后由 CSS 淡出。
+  // 这里不清空填充宽度，让它停在最终进度上淡出；
+  // 否则会出现「进度条往回缩」，看起来像进度倒退。下次 beginLoading 会归零。
+  function endLoading() {
+    previewWrap.classList.remove("is-loading", "is-sweep");
+  }
+
+  // 进度条是 .preview-wrap 的绝对定位子元素，容器滚动时会跟着内容走，
+  // 这里把滚动量补回去，让它始终贴在可见区域的上沿。
+  function syncLoadBarOffset() {
+    loadBar.style.top = `${previewWrap.scrollTop}px`;
   }
 
   function hasFileDrag(event) {
@@ -2853,7 +2894,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
   async function rebuildAllItemSources(fitAfter = false) {
     const generation = ++state.reprocessGeneration;
-    previewWrap.classList.add("is-loading");
+    beginLoading(true);
     exportButton.disabled = true;
     const items = [...state.items];
     await Promise.all(items.map((item) => rebuildItemSource(item, item.editVersion)));
@@ -3434,7 +3475,8 @@ function updateStepChips() {
       statusTitle.textContent = `${presetName} 索引 ${rowCount} 行已生成`;
       imageCounter.textContent = `${items.length} 张`;
       emptyState.classList.add("is-hidden");
-      previewWrap.classList.remove("is-empty", "is-loading");
+      previewWrap.classList.remove("is-empty");
+      endLoading();
       exportButton.disabled = state.isExporting && !state.exportHydrationItems;
       syncGridColumns();
       updateExportPurposeInfo();
@@ -3451,7 +3493,8 @@ function updateStepChips() {
     // 数量变化时播放渲染落定动画，微调滑块时不重复触发
     const itemCountChanged = items.length !== state.renderedItemCount;
     state.renderedItemCount = items.length;
-    previewWrap.classList.remove("is-empty", "is-loading");
+    previewWrap.classList.remove("is-empty");
+    endLoading();
     if (itemCountChanged) playCanvasSettle();
     exportButton.disabled = state.isExporting && !state.exportHydrationItems;
     syncFrameSelectionControls();
@@ -5797,7 +5840,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     state.frameSelectionMode = false;
     clearFrameSelection({ redraw: false });
     emptyState.classList.remove("is-hidden");
-    previewWrap.classList.remove("is-loading");
+    endLoading();
     previewWrap.classList.add("is-empty");
     setFilmStageState("intro");
     statusTitle.textContent = "等待导入扫描件";
@@ -6530,6 +6573,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
 
   previewWrap.addEventListener("scroll", () => {
     hideFrameMenu();
+    syncLoadBarOffset();
     if (state.lightTable.active && state.lightTable.pointer) scheduleLoupeFrame();
   }, { passive: true });
   window.addEventListener("scroll", hideFrameMenu, { passive: true });
@@ -7001,7 +7045,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     }
 
     statusTitle.textContent = "正在读取扫描件...";
-    previewWrap.classList.add("is-loading");
+    beginLoading(false);
     // 批量导入时先展示骨架行，避免列表区域空白等待
     if (imageFiles.length >= 4) showListSkeleton(imageFiles.length);
     if (!state.items.length) setFilmStageState("reading");
@@ -7028,6 +7072,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
           completed += 1;
           // 进度提示：让等待可见，避免误以为卡死
           statusTitle.textContent = `正在读取扫描件 ${completed}/${imageFiles.length}...`;
+          // 顶部进度条按真实完成度填充，不再是无限循环的装饰动画
+          updateLoadingProgress((completed / imageFiles.length) * 100);
         }
       }
     };
@@ -7069,7 +7115,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
   // 导入后的收尾：与 rebuildAllItemSources 的尾部一致，但不做重复重建
   function finishReprocessAfterImport() {
     state.reprocessGeneration += 1;
-    previewWrap.classList.remove("is-loading");
+    endLoading();
     exportButton.disabled = false;
     render();
     renderPhotoList();
