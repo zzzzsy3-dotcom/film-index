@@ -2391,6 +2391,51 @@ body.has-modal-open .notice.is-visible {
   display: none;
 }
 
+/* 导出弹窗：胶卷型号确认行
+   型号会印在纸面上（品牌板卷名 / 胶片边字），印错改不掉，
+   所以导出前把它摆出来；从没确认过时给一条橙色警示。 */
+.export-stock-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--accent-dim);
+}
+
+.export-stock-row .field {
+  gap: 6px;
+}
+
+.export-stock-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(208, 122, 99, 0.42);
+  border-left-width: 3px;
+  border-radius: var(--r-md);
+  background: var(--danger-dim);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.export-stock-warning[hidden] {
+  display: none;
+}
+
+.export-stock-warning .text-button {
+  flex: none;
+  padding: 4px 10px;
+  border-color: rgba(208, 122, 99, 0.5);
+  color: var(--danger);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .frame-export-info {
   padding: 12px 14px;
   border: 1px dashed var(--line-strong);

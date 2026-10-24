@@ -31,7 +31,7 @@
     </script>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171310'/%3E%3Crect x='6' y='6' width='20' height='20' rx='2' fill='%23100d0a'/%3E%3Ccircle cx='16' cy='14' r='5' fill='%236d9fc0'/%3E%3Crect x='8' y='22' width='16' height='1.6' fill='%236d9fc0' opacity='.55'/%3E%3C/svg%3E" />
     <!-- 本地分发版：已移除 Google Fonts（国内可能加载失败），styles.css 会自动回退到系统字体 -->
-    <link rel="stylesheet" href="styles.css?v=20261023-loadbar" />
+    <link rel="stylesheet" href="styles.css?v=20261024-stockcheck" />
     <script>
       // 访问守卫：直接访问 tool.html（绕过密码页）时也必须验证。
       // sessionStorage 只在当前标签页有效，关闭标签页即失效。
@@ -111,10 +111,10 @@
               <label class="field" id="brandLogoFieldLeft" hidden>
                 <span>品牌 logo</span>
                 <select id="brandLogoLeft">
-                  <option value="full blue" selected>full blue（蓝色实心）</option>
-                  <option value="full black">full black（黑色实心）</option>
-                  <option value="hollow blue">hollow blue（蓝色空心）</option>
+                  <option value="hollow blue" selected>hollow blue（蓝色空心）</option>
+                  <option value="full blue">full blue（蓝色实心）</option>
                   <option value="hollow black">hollow black（黑色空心）</option>
+                  <option value="full black">full black（黑色实心）</option>
                 </select>
                 <small class="field-hint">显示在最后一行的品牌信息里，文字颜色跟随 logo</small>
               </label>
@@ -653,6 +653,17 @@
         </div>
         <div class="frame-export-body">
           <div class="frame-export-controls">
+            <div class="export-stock-row" id="exportStockRow">
+              <label class="field">
+                <span>胶卷型号</span>
+                <select id="exportStockSelect"></select>
+                <small class="field-hint" id="exportStockHint">—</small>
+              </label>
+              <p class="export-stock-warning" id="exportStockWarning" hidden>
+                <span id="exportStockWarningText">当前是默认型号，请确认与实际胶卷一致</span>
+                <button type="button" class="text-button" id="exportStockConfirm">确认无误</button>
+              </p>
+            </div>
             <label class="field">
               <span>输出质量</span>
               <select id="exportScale">
@@ -783,8 +794,8 @@
     <script src="print-physical.js?v=20260923-print"></script>
     <script src="optical-loupe.js"></script>
     <script src="film-index-logos.js?v=20261021-logos"></script>
-    <script src="film-index-6inch.js?v=20261022-auto"></script>
-    <script src="app.js?v=20261023-loadbar"></script>
+    <script src="film-index-6inch.js?v=20261024-stockcheck"></script>
+    <script src="app.js?v=20261024-stockcheck"></script>
     <script src="gsap-ui.js?v=20261012-sidebar"></script>
   </body>
 </html>

@@ -48,6 +48,8 @@
   const stockSelect = document.getElementById("stockSelect");
   const stockSearch = document.getElementById("stockSearch");
   const stockSearchStatus = document.getElementById("stockSearchStatus");
+  const exportStockSelect = document.getElementById("exportStockSelect");
+  const exportStockConfirm = document.getElementById("exportStockConfirm");
   const stockName = document.getElementById("stockName");
   const stockEdgeText = document.getElementById("stockEdgeText");
   const stockProcess = document.getElementById("stockProcess");
@@ -374,6 +376,9 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   const DEFAULT_STOCK_ID = "kodak-portra-400";
   const STORAGE_STOCKS_KEY = "filmIndex.customStocks";
   const STORAGE_SELECTED_KEY = "filmIndex.selectedStock";
+  // 用户是否已确认过胶卷型号（改过型号或点过「确认无误」）。
+  // 型号会被印在纸面上（品牌板卷名 / 胶片边字），印错改不掉 → 导出前要过一眼。
+  const STORAGE_STOCK_CHECKED_KEY = "filmIndex.stockChecked";
 
   const PRINT_CALIBRATION_KEY = "filmIndex.printCalibration";
   const PRINT_DPI_KEY = "filmIndex.printDpi";
@@ -870,6 +875,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     updatePhysicalControls();
     updateExportMemoryWarning();
     updateExportPurposeInfo();
+    updateExportStockRow();
     exportModal.hidden = false;
     document.body.style.overflow = "hidden";
     // 通知改到顶部显示，避免被弹窗底部按钮区遮住
@@ -901,6 +907,30 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
         });
       }
       updateExportPurposeInfo();
+    });
+  }
+
+  // 导出弹窗里的胶卷型号：可当场改，改完同步回左侧并重绘
+  if (exportStockSelect) {
+    exportStockSelect.addEventListener("change", () => {
+      const value = exportStockSelect.value;
+      if (!value) return;
+      state.stockId = value;
+      if (stockSelect) stockSelect.value = value;
+      persistStocks();
+      fillStockForm(getActiveStock());
+      // 用户主动改过型号 = 已知情，不再提示
+      markStockChecked();
+      updateFrameModeControls();
+      scheduleRender();
+      updateExportStockRow();
+      updateExportPurposeInfo();
+    });
+  }
+  if (exportStockConfirm) {
+    exportStockConfirm.addEventListener("click", () => {
+      markStockChecked();
+      updateExportStockRow();
     });
   }
 
@@ -3303,7 +3333,10 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     const wanted = Number(select && select.value) || 0;
     const hint = document.getElementById("columnsHint");
     if (hint) {
-      const slot = layout.brandSlot || 1;
+      // 品牌板固定钉在纸面右下角；末行只有「伸进品牌区」时才需要让位。
+      // brandSlot = 0 表示末行够不着品牌区，一格都不用让。
+      const slot = layout.brandSlot || 0;
+      const slotNote = slot > 0 ? `末行 ${slot} 格留给品牌板` : "品牌板在页脚，不占格位";
       const pid = getGridPresetId();
       const pname = pid ? FilmIndex6Inch.getPreset(pid).name : "索引";
       const fillH = Math.round((layout.gridH / layout.areaH) * 100);
@@ -3312,10 +3345,10 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
         hint.textContent = `${pname}索引：自动 ${layout.rows} 行 × ${actual} 列，占满 ${fillH}%`;
       } else if (wanted !== actual) {
         // 用户选的列数排不下 → 说清楚为什么，并告知实际用了多少格
-        hint.textContent = `每行 ${wanted} 格放不下 ${count} 张（末行 ${slot} 格留给品牌板），`
+        hint.textContent = `每行 ${wanted} 格放不下 ${count} 张（${slotNote}），`
           + `已按 ${actual} 格/行排版`;
       } else {
-        hint.textContent = `${pname}索引：每行 ${actual} 格（末行 ${slot} 格留给品牌板）`;
+        hint.textContent = `${pname}索引：每行 ${actual} 格（${slotNote}）`;
       }
       hint.hidden = false;
     }
@@ -3340,12 +3373,70 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     }
   }
 
+  // ── 导出前的胶卷型号确认 ────────────────────────────────────────
+  // 型号会印在纸面上：网格索引印在品牌板（卷名），胶片反转印在胶片边字。
+  // 程序永远有一个默认型号（Kodak Portra 400），所以要防的不是「没选」，
+  // 而是「忘了改，印错了还不知道」→ 从没主动确认过就在导出弹窗里提醒一眼。
+  // 不用再加一层弹窗：导出弹窗本来就是最后一道关，把型号摆在那儿最有效。
+
+  function isStockChecked() {
+    try {
+      return localStorage.getItem(STORAGE_STOCK_CHECKED_KEY) === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function markStockChecked() {
+    try {
+      localStorage.setItem(STORAGE_STOCK_CHECKED_KEY, "1");
+    } catch (error) {
+      // 存储不可用：忽略，本次会话内仍会继续提示
+    }
+  }
+
+  // 弹窗里的型号下拉 = 左侧下拉的镜像（内置/自定义型号增删时一起变）
+  function syncExportStockOptions() {
+    if (!exportStockSelect || !stockSelect) return;
+    exportStockSelect.replaceChildren(
+      ...Array.from(stockSelect.options).map((opt) => opt.cloneNode(true)),
+    );
+    const active = getActiveStock();
+    if (active) exportStockSelect.value = active.id;
+  }
+
+  function updateExportStockRow() {
+    const row = document.getElementById("exportStockRow");
+    const hint = document.getElementById("exportStockHint");
+    const warning = document.getElementById("exportStockWarning");
+    const warningText = document.getElementById("exportStockWarningText");
+    if (!row || !exportStockSelect || !hint || !warning) return;
+
+    syncExportStockOptions();
+
+    const stock = resolveStock(getActiveStock());
+    const grid = isGridPurpose();
+    const printed = grid
+      ? `品牌板会印「${stock.name}」`
+      : (stock.edgeText ? `边字会印「${stock.edgeText}」` : "本型号无边字");
+    hint.textContent = `工艺 ${stock.process} · ${printed}`;
+
+    // 从没确认过 → 提示；用户改过型号或点过「确认无误」→ 不再打扰
+    const needCheck = !isStockChecked();
+    warning.hidden = !needCheck;
+    if (needCheck && warningText) {
+      warningText.textContent = grid
+        ? `当前型号「${stock.name}」会印在品牌板上，请确认与实际胶卷一致`
+        : `当前型号「${stock.name}」会印在胶片边字上，请确认与实际胶卷一致`;
+    }
+  }
+
 // 品牌 logo 取值：左侧边栏的 brandLogoLeft 为准（弹窗里的旧选择器已移除）
   function getBrandLogoValue() {
     const left = document.getElementById("brandLogoLeft");
     if (left && left.value) return left.value;
     const legacy = document.getElementById("brandLogo");
-    return (legacy && legacy.value) || "full blue";
+    return (legacy && legacy.value) || "hollow blue";
   }
 
 function updateStepChips() {
@@ -3400,6 +3491,8 @@ function updateStepChips() {
       columns: getSixInchColumns(),
       ratio,
       preset: getGridPresetId() || "6inch",
+      // 品牌板宽度要靠文本量出来，布局阶段必须拿到同一份品牌信息
+      brand: getSixInchBrandOptions(),
     });
     drawSixInchPreview.rowCount = layout.rows;
     drawSixInchPreview.dpi = previewDpi;
@@ -5212,7 +5305,14 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     const preset = presetId || getGridPresetId() || "6inch";
     const layout = {
       // 列数沿用左侧「画幅与排列 → 每行张数」，与胶卷反转保持同一套控制
-      ...FilmIndex6Inch.computeLayout(itemCount, { dpi, columns: getSixInchColumns(), ratio, preset }),
+      ...FilmIndex6Inch.computeLayout(itemCount, {
+        dpi,
+        columns: getSixInchColumns(),
+        ratio,
+        preset,
+        // 品牌板宽度要靠文本量出来，布局阶段必须拿到同一份品牌信息
+        brand: getSixInchBrandOptions(),
+      }),
       sixInch: true,
     };
     return {
@@ -7306,6 +7406,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     }
     // 空状态整行收起，避免在字段之间留出多余间距
     stockSearchStatus.hidden = !stockSearchStatus.textContent;
+    // 导出弹窗里的型号下拉是镜像，跟着一起变
+    syncExportStockOptions();
     updateStepChips();
   }
 
@@ -7440,6 +7542,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     stockSelect.addEventListener("change", () => {
       state.stockId = stockSelect.value;
       persistStocks();
+      // 用户主动换过型号 = 已知情，导出时不再提示确认
+      markStockChecked();
       fillStockForm(getActiveStock());
       updateFrameModeControls();
       scheduleRender();

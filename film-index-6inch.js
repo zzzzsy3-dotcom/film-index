@@ -43,10 +43,121 @@
   const BRAND_RESERVED_CHARS = 24;  // 文字区预留字符数（占位按此预留，保证不压照片）
   const BRAND_LINE_HEIGHT = 1.2;
   const BRAND_LEVEL_SUM = 1.5 + 1.0 + 1.0 + 0.95 + 1.12;  // 5 行文字的层级系数和
+  const BRAND_SAFETY_MM = 1;        // 布局阶段预留宽度的安全余量（量测误差兜底）
+
+  // 品牌板字体：全部系统字体，不依赖任何外链加载（国内网络下 Google Fonts 会挂）
+  const BRAND_FONT_SANS = '"Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif';
+  const BRAND_FONT_SERIF = 'Georgia, "Times New Roman", "Songti SC", SimSun, serif';
+  const BRAND_FONT_MONO = 'Consolas, "SF Mono", Menlo, "PingFang SC", "Microsoft YaHei", monospace';
+
+  // canvas 的 ctx.letterSpacing（字距）Safari 17.4 以下不支持 → 不支持就退化成 0 字距
+  const SUPPORTS_LETTER_SPACING = (() => {
+    try {
+      return typeof CanvasRenderingContext2D !== "undefined"
+        && "letterSpacing" in CanvasRenderingContext2D.prototype;
+    } catch (e) {
+      return false;
+    }
+  })();
 
   // 文字区预留宽度（按字符数估算，不依赖 canvas 测量，布局阶段就能算出）
   function estimateBrandTextWidth(baseSize) {
     return 0.55 * baseSize * BRAND_RESERVED_CHARS;
+  }
+
+  // 品牌板实际宽度要靠 canvas 量文字，布局阶段还没有画布。
+  // 这里用一块离屏画布量，字体栈与绘制阶段完全一致，量出的毫米数相同。
+  let brandMeasureCtx = null;
+  function getBrandMeasureContext() {
+    if (brandMeasureCtx !== null) return brandMeasureCtx;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 8;
+      canvas.height = 8;
+      brandMeasureCtx = canvas.getContext("2d");
+    } catch (e) {
+      brandMeasureCtx = false;
+    }
+    return brandMeasureCtx;
+  }
+
+  // 品牌板的 5 行文字：布局阶段与绘制阶段共用同一份，避免两处算出不同宽度
+  // font = 字族；spacing = 字距（em 倍数，相对字号）
+  function buildBrandLines(frame, opts) {
+    const raw = [
+      { text: "FILM INDEX", weight: "700", level: 1.5, font: BRAND_FONT_SERIF, spacing: 0.02 },
+      { text: (opts && opts.rollName) || "", weight: "500", level: 0.88, font: BRAND_FONT_MONO, spacing: 0.03 },
+      { text: (opts && opts.dateStamp) || "", weight: "500", level: 0.88, font: BRAND_FONT_MONO, spacing: 0.03 },
+      { text: "Process C41", weight: "500", level: 0.8, font: BRAND_FONT_MONO, spacing: 0.03 },
+      { text: "ELLM Studio", weight: "700", level: 0.98, font: BRAND_FONT_SANS, spacing: 0.14 },
+    ].filter((l) => l.text);
+    return raw.map((l) => ({ ...l, size: frame.baseSize * l.level }));
+  }
+
+  // 量出品牌板内容宽度（不超过框架宽）
+  // ⚠️ 自定义型号名可能很长（用户自己起名），超宽时不能硬截到框架宽 ——
+  //    那样文字会压到 logo 上。这里按比例缩字号，缩到底仍超宽就加省略号截断。
+  const BRAND_MIN_TEXT_SCALE = 0.72;
+
+  function measureBrandPanel(context, frame, opts) {
+    const base = buildBrandLines(frame, opts);
+    if (!context) {
+      const contentW = frame.reservedTextW + frame.colGap + frame.logoW + frame.padX * 2;
+      return { lines: base, textW: frame.reservedTextW, panelW: Math.min(contentW, frame.frameW) };
+    }
+
+    // 文字区最多能占多宽 = 框架宽 - logo - 间距 - 内边距
+    const maxTextW = Math.max(0, frame.frameW - frame.colGap - frame.logoW - frame.padX * 2);
+
+    const measure = (line, size) => {
+      context.save();
+      context.textBaseline = "middle";
+      context.textAlign = "left";
+      context.font = `${line.weight} ${size}px ${line.font}`;
+      if (SUPPORTS_LETTER_SPACING) context.letterSpacing = `${line.spacing * size}px`;
+      const w = context.measureText(line.text).width;
+      context.restore();
+      return w;
+    };
+
+    let textW = 0;
+    for (const line of base) textW = Math.max(textW, measure(line, line.size));
+
+    // 超宽 → 整体缩字号（下限 0.72，再小就难看了）
+    let scale = 1;
+    if (textW > maxTextW && textW > 0) {
+      scale = Math.max(BRAND_MIN_TEXT_SCALE, maxTextW / textW);
+    }
+    const lines = base.map((line) => ({ ...line, size: line.size * scale }));
+
+    // 缩到底仍超宽的行 → 逐字截断加省略号
+    for (const line of lines) {
+      if (measure(line, line.size) > maxTextW) {
+        line.text = truncateBrandLine(context, line, maxTextW);
+      }
+    }
+
+    textW = 0;
+    for (const line of lines) textW = Math.max(textW, measure(line, line.size));
+
+    const contentW = textW + frame.colGap + frame.logoW + frame.padX * 2;
+    return { lines, textW, panelW: Math.min(contentW, frame.frameW) };
+  }
+
+  // 逐字截断到指定宽度（加省略号）
+  function truncateBrandLine(context, line, maxWidth) {
+    const ELLIPSIS = "…";
+    context.save();
+    context.font = `${line.weight} ${line.size}px ${line.font}`;
+    if (SUPPORTS_LETTER_SPACING) context.letterSpacing = `${line.spacing * line.size}px`;
+    const ellipsisW = context.measureText(ELLIPSIS).width;
+    let out = "";
+    for (const ch of String(line.text)) {
+      if (context.measureText(out + ch).width + ellipsisW > maxWidth) break;
+      out += ch;
+    }
+    context.restore();
+    return out ? out + ELLIPSIS : ELLIPSIS;
   }
 
   // 品牌板「框架」：logo 宽 + 间距 + 预留文字区 + 内边距
@@ -149,36 +260,80 @@
     const areaW = pageW - margin * 2;
     const areaH = pageH - margin * 2;
 
-    // 品牌板固定高度 → 框架宽固定 → 占位格数 = ceil(框架宽 / 格宽)
+    // 品牌板：固定高度 12.7mm，宽度量出来（不随格子大小变）。
+    // 位置规则（2026-10-24 定）：品牌板永远钉在「纸面右下角」，
+    // 跟照片行数无关；照片区照常往下排，只有当末行会伸进品牌板那块矩形时，
+    // 才把末行右侧相应的格子让出来。留位要求 = 不压到照片即可。
     const brandPanelH = BRAND_PANEL_H_MM * pxPerMm;
     const frame = computeBrandFrame(brandPanelH);
 
+    // 品牌板实际宽度：布局阶段用离屏画布量（与绘制阶段同一套算法）。
+    // 拿不到品牌文本（老调用点没传 brand）时退回框架宽，宁可多留也不压照片。
+    const measureCtx = getBrandMeasureContext();
+    const measured = options.brand && measureCtx
+      ? measureBrandPanel(measureCtx, frame, options.brand)
+      : { panelW: frame.frameW, lines: [], textW: 0 };
+    const brandReserveW = Math.min(
+      measured.panelW + BRAND_SAFETY_MM * pxPerMm,
+      frame.frameW,
+    );
+
+    // 品牌区 = 纸面可用区右下角那块矩形（右贴纸边、下贴纸边）
+    const brandZone = {
+      x: areaX + areaW - brandReserveW,
+      y: areaY + areaH - brandPanelH,
+      w: brandReserveW,
+      h: brandPanelH,
+    };
+
     // ── 列数与行数求解 ────────────────────────────────────────────
-    // 约束：末行必须至少 1 张照片（否则品牌板独占一行），
-    //       且末行照片数不能超过「末行可用格 = 列数 - 品牌板占位格数」。
+    // 约束：末行必须至少 1 张照片；
+    //       若末行底落进品牌区（垂直重叠），末行右侧被品牌区横向覆盖的格子
+    //       必须让出来，末行照片数不能超过「末行可用格」。
     // 用户指定的列数若无解（常见于照片数恰好是列数整数倍），
     // 自动改用能放下的列数，并把实际列数回报给 UI 同步显示。
+
+    // 品牌区横向覆盖了哪些列。
+    // 网格恒为满宽（格宽 = 可用宽 / 列数），所以 gridX 恒等于 areaX，与列数无关。
+    const brandCoveredCols = (cols, cw) => {
+      const hits = [];
+      const zoneRight = brandZone.x + brandZone.w;
+      for (let c = 0; c < cols; c += 1) {
+        const cx = areaX + c * (cw + gap);
+        // 相交（重叠 > 0.5px 才算，避免浮点误差把相邻格也算进来）
+        if (cx < zoneRight - 0.5 && cx + cw > brandZone.x + 0.5) hits.push(c);
+      }
+      return hits;
+    };
 
     const solveAt = (cols) => {
       const cw = (areaW - (cols - 1) * gap) / cols;
       const ch = cw / ratio;
       if (cw * cols + (cols - 1) * gap > areaW + 0.5) return null;   // 横向放不下
-      const sl = Math.max(1, Math.min(cols - 1, Math.ceil((frame.frameW + gap) / (cw + gap))));
-      const usable = cols - sl;
-      if (usable < 1) return null;
+      const hits = brandCoveredCols(cols, cw);
+      const usableAll = cols - hits.length;
+      if (usableAll < 1) return null;
       // 该列数下、可用高度内最多能放多少张（用于给用户提示）
       let maxRows = 1;
       for (let r = 1; r <= 20; r += 1) {
         if (r * ch + (r - 1) * gap > areaH + 0.5) break;
         maxRows = r;
       }
-      const maxCapacity = (maxRows - 1) * cols + usable;
+      const maxCapacity = (maxRows - 1) * cols + usableAll;
       for (let r = 1; r <= 20; r += 1) {
         const lastPhotos = itemCount - (r - 1) * cols;
-        if (lastPhotos >= 1 && lastPhotos <= usable) {
-          const gh = r * ch + (r - 1) * gap;
-          if (gh > areaH + 0.5) return null;                        // 纵向放不下
-          return { columns: cols, cellW: cw, cellH: ch, slot: sl, rows: r, maxCapacity };
+        if (lastPhotos < 1) break;
+        const gh = r * ch + (r - 1) * gap;
+        if (gh > areaH + 0.5) break;                                 // 纵向放不下
+        // 末行底有没有落进品牌区？落进去了才需要横向让位
+        const rowBottom = areaY + (r - 1) * (ch + gap) + ch;
+        const overlaps = rowBottom > brandZone.y + 0.5;
+        const usable = overlaps ? usableAll : cols;
+        if (lastPhotos <= usable) {
+          return {
+            columns: cols, cellW: cw, cellH: ch, rows: r, maxCapacity,
+            blockedCols: overlaps ? hits : [],
+          };
         }
       }
       return null;   // 该列数放不下（无「末行有照片且不超格」的解）
@@ -192,13 +347,13 @@
       // 记录用户所选列数的最大容量（放不下时用来提示）
       const wcw = (areaW - (wanted - 1) * gap) / wanted;
       const wch = wcw / ratio;
-      const wsl = Math.max(1, Math.min(wanted - 1, Math.ceil((frame.frameW + gap) / (wcw + gap))));
+      const wusable = wanted - brandCoveredCols(wanted, wcw).length;
       let wmaxRows = 1;
       for (let r = 1; r <= 20; r += 1) {
         if (r * wch + (r - 1) * gap > areaH + 0.5) break;
         wmaxRows = r;
       }
-      wantedMaxCapacity = (wmaxRows - 1) * wanted + (wanted - wsl);
+      wantedMaxCapacity = (wmaxRows - 1) * wanted + Math.max(0, wusable);
     }
     if (!solution) {
       // 自动模式（或用户列数无解）：遍历所有列数，挑「纵向填充率最高」的那个。
@@ -223,12 +378,17 @@
         : MIN_COLUMNS;
       const cw = (areaW - (cols - 1) * gap) / cols;
       const ch = cw / ratio;
-      const sl = Math.max(1, Math.min(cols - 1, Math.ceil((frame.frameW + gap) / (cw + gap))));
-      solution = { columns: cols, cellW: cw, cellH: ch, slot: sl, rows: 2, maxCapacity: 0 };
+      const hits = brandCoveredCols(cols, cw);
+      solution = {
+        columns: cols, cellW: cw, cellH: ch, rows: 2, maxCapacity: 0,
+        blockedCols: hits,
+      };
     }
 
-    const { columns, cellW, cellH, slot, rows } = solution;
-    const lastRowUsable = Math.max(0, columns - slot);
+    const { columns, cellW, cellH, rows } = solution;
+    const blockedCols = solution.blockedCols || [];
+    const brandSlot = blockedCols.length;
+    const lastRowUsable = Math.max(0, columns - brandSlot);
 
     const gridW = columns * cellW + (columns - 1) * gap;
     const gridH = rows * cellH + (rows - 1) * gap;
@@ -240,26 +400,25 @@
     // 溢出标记：手动指定的列数放不下时，交给 UI 提示用户
     const overflow = gridH > areaH + 0.5 || gridW > areaW + 0.5;
 
-    // 品牌板占位区：最后一行的最后 slot 格（右侧贴纸边）
-    // 板子本身宽度 = 框架宽（固定），靠右贴纸边；占位区左边多出的部分是留白。
-    const slotX = gridX + (columns - slot) * (cellW + gap);
-    const slotY = gridY + (rows - 1) * (cellH + gap);
+    // 品牌板：钉死在纸面右下角（可用区右下角），跟照片行数无关。
+    // zone 是布局阶段的预留矩形（含量测余量），板子画在 zone 内、右贴纸边。
     const rowBottom = gridY + (rows - 1) * (cellH + gap) + cellH;
-    const slotW = slot * cellW + (slot - 1) * gap;
     const brand = {
-      slotX, slotY, slotW,
-      slotH: cellH,
       frame,
       panelH: brandPanelH,
-      // 垂直定位：贴行底；若固定高度超过格高，则改为顶对齐向下延伸（不压上一行）
-      panelY: Math.max(slotY, rowBottom - brandPanelH),
-      panelX: 0,
-      panelW: 0,
+      // 精确宽度在绘制阶段重新量（字体度量可能与布局阶段有微小差异）
+      panelW: measured.panelW,
+      // 贴纸右边缘，绘制时右对齐用
+      right: areaX + areaW,
+      bottom: areaY + areaH,
+      zone: brandZone,
+      // 品牌区顶边：末行底超过它就要横向让位
+      zoneTop: brandZone.y,
       rowBottom,
     };
 
-    // 格子：品牌板占位内的格子标 blocked（用行列索引判定，不碰浮点）
-    const brandStartCol = columns - slot;
+    // 格子：末行里被品牌区横向覆盖的格子标 blocked（用列索引判定，不碰浮点）
+    const blockedSet = new Set(blockedCols);
     const cells = [];
     for (let r = 0; r < rows; r += 1) {
       for (let c = 0; c < columns; c += 1) {
@@ -270,7 +429,7 @@
           y: gridY + r * (cellH + gap),
           w: cellW,
           h: cellH,
-          blocked: r === rows - 1 && c >= brandStartCol,
+          blocked: r === rows - 1 && blockedSet.has(c),
         });
       }
     }
@@ -290,38 +449,12 @@
       actualColumns: columns,
       maxCapacity: solution.maxCapacity,
       userMaxCapacity: wantedMaxCapacity,
-      brandSlot: slot,
+      brandSlot,
       lastRowUsable,
       overflow,
       cells, brand,
       ratio, pxPerMm, dpi,
     };
-  }
-
-  // 选列数：格子尽量大、总高放得进可用区
-  // 占位格数由品牌板框架宽动态决定（向上取整到整数格）
-  function pickColumns(itemCount, areaW, areaH, gap, ratio, frameW) {
-    let best = MIN_COLUMNS;
-    let bestCellW = -1;
-    for (let cols = MIN_COLUMNS; cols <= MAX_COLUMNS; cols += 1) {
-      const cellW = (areaW - (cols - 1) * gap) / cols;
-      const cellH = cellW / ratio;
-      const slot = Math.max(1, Math.min(cols - 1, Math.ceil((frameW + gap) / (cellW + gap))));
-      const usable = cols - slot;
-      if (usable < 1) continue;
-      // 找最小行数，且末行必须有照片（否则品牌板独占一行）
-      let rows = 1;
-      let valid = false;
-      for (let r = 1; r <= 20; r += 1) {
-        const lastPhotos = itemCount - (r - 1) * cols;
-        if (lastPhotos >= 1 && lastPhotos <= usable) { rows = r; valid = true; break; }
-      }
-      if (!valid) continue;
-      const gridH = rows * cellH + (rows - 1) * gap;
-      if (gridH > areaH) continue;          // 放不下
-      if (cellW > bestCellW) { bestCellW = cellW; best = cols; }
-    }
-    return bestCellW > 0 ? best : MIN_COLUMNS;
   }
 
   // ── 渲染 ────────────────────────────────────────────────────────────
@@ -381,8 +514,9 @@
   }
 
   // ── 品牌板 ──────────────────────────────────────────────────────────
-  // 固定高度 12.7mm；宽度 = 实际内容宽（不超过框架宽）；靠右贴纸边。
-  // 垂直：贴行底；格高不足时顶对齐向下延伸（不压上一行）。
+  // 固定高度 12.7mm；宽度 = 实际内容宽（不超过框架宽）。
+  // 位置（2026-10-24 定）：永远钉在「纸面右下角」，跟照片行数无关。
+  // 底边贴纸边、右边贴纸边；板宽再窄也不会越过布局阶段预留的品牌区。
   function drawBrandPanel(context, layout, opts) {
     const brand = layout.brand;
     const frame = brand.frame;
@@ -394,27 +528,10 @@
     const img = logoImg && logoImg.img ? logoImg.img : null;
 
     // 内容：左列 5 行文字 + 右列 logo（竖向）
-    const rawLines = [
-      { text: "Film Index", weight: "700", level: 1.5 },
-      { text: opts.rollName || "", weight: "500", level: 1.0 },
-      { text: opts.dateStamp || "", weight: "500", level: 1.0 },
-      { text: "Process C41", weight: "500", level: 0.95 },
-      { text: "ELLM Studio", weight: "700", level: 1.12 },
-    ].filter((l) => l.text);
-
-    // 字号按固定高度算（不随格子大小变）
-    const lines = rawLines.map((l) => ({ ...l, size: frame.baseSize * l.level }));
-
-    // 实际文字宽（用 canvas 精确测量）
-    context.save();
-    context.textBaseline = "middle";
-    context.textAlign = "left";
-    let textW = 0;
-    for (const line of lines) {
-      context.font = `${line.weight} ${line.size}px "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif`;
-      textW = Math.max(textW, context.measureText(line.text).width);
-    }
-    context.restore();
+    // 与布局阶段共用同一份文字定义，保证量出的宽度一致
+    const measured = measureBrandPanel(context, frame, opts);
+    const lines = measured.lines;
+    const textW = measured.textW;
 
     // logo 尺寸固定（由 panelH 决定）
     const logoH = frame.logoH;
@@ -425,13 +542,13 @@
       logoW = logoH * (natW / natH);
     }
 
-    // 实际板宽（内容真实宽度），不超过框架宽
+    // 实际板宽（内容真实宽度），不超过框架宽，也不超过布局预留的品牌区宽度
     const contentW = textW + frame.colGap + logoW + frame.padX * 2;
-    const panelW = Math.min(contentW, frame.frameW);
+    const panelW = Math.min(contentW, frame.frameW, brand.zone.w);
 
-    // 靠右贴纸边
-    const panelX = brand.slotX + brand.slotW - panelW;
-    const panelY = brand.panelY;
+    // 钉在纸面右下角：右贴纸边、底贴纸边
+    const panelX = brand.right - panelW;
+    const panelY = brand.bottom - panelH;
 
     brand.panelW = panelW;
     brand.panelH = panelH;
@@ -448,7 +565,8 @@
     context.textBaseline = "middle";
     context.textAlign = "left";
     for (const line of lines) {
-      context.font = `${line.weight} ${line.size}px "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif`;
+      context.font = `${line.weight} ${line.size}px ${line.font}`;
+      if (SUPPORTS_LETTER_SPACING) context.letterSpacing = `${line.spacing * line.size}px`;
       context.fillStyle = ink;
       context.fillText(line.text, textX, cursorY + line.size * 0.6);
       cursorY += line.size * BRAND_LINE_HEIGHT + frame.lineGap;
