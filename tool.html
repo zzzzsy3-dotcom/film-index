@@ -31,7 +31,7 @@
     </script>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171310'/%3E%3Crect x='6' y='6' width='20' height='20' rx='2' fill='%23100d0a'/%3E%3Ccircle cx='16' cy='14' r='5' fill='%236d9fc0'/%3E%3Crect x='8' y='22' width='16' height='1.6' fill='%236d9fc0' opacity='.55'/%3E%3C/svg%3E" />
     <!-- 本地分发版：已移除 Google Fonts（国内可能加载失败），styles.css 会自动回退到系统字体 -->
-    <link rel="stylesheet" href="styles.css?v=20261024-stockcheck" />
+    <link rel="stylesheet" href="styles.css?v=20261025-clear" />
     <script>
       // 访问守卫：直接访问 tool.html（绕过密码页）时也必须验证。
       // sessionStorage 只在当前标签页有效，关闭标签页即失效。
@@ -129,10 +129,10 @@
             </summary>
             <div class="step-body">
               <label class="drop-zone" id="dropZone">
-                <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp" multiple />
+                <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/bmp" multiple />
                 <span class="drop-icon" aria-hidden="true">+</span>
                 <span class="drop-title">选择或拖入扫描件</span>
-                <span class="drop-subtitle">JPG / PNG / WebP，按本地文件处理</span>
+                <span class="drop-subtitle">JPG / PNG / WebP / BMP，按本地文件处理</span>
               </label>
 
               <div class="field">
@@ -167,11 +167,19 @@
               <details class="photo-list-section" id="photoListPanel" hidden>
                 <summary>
                   <span>照片列表</span>
-                  <span class="photo-list-count" id="photoListCount">0 张</span>
+                  <span class="photo-list-summary-right">
+                    <span class="photo-list-count" id="photoListCount">0 张</span>
+                    <button
+                      type="button"
+                      class="photo-list-clear"
+                      id="clearButton"
+                      title="清空全部照片"
+                      aria-label="清空全部照片"
+                    >清除</button>
+                  </span>
                 </summary>
                 <div class="photo-list-content">
                   <ul class="photo-list" id="photoList"></ul>
-                  <button id="clearButton" class="text-button" type="button">清空全部</button>
                 </div>
               </details>
             </div>
@@ -795,7 +803,7 @@
     <script src="optical-loupe.js"></script>
     <script src="film-index-logos.js?v=20261021-logos"></script>
     <script src="film-index-6inch.js?v=20261024-stockcheck"></script>
-    <script src="app.js?v=20261024-stockcheck"></script>
+    <script src="app.js?v=20261028-kodaksu"></script>
     <script src="gsap-ui.js?v=20261012-sidebar"></script>
   </body>
 </html>

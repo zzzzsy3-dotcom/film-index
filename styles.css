@@ -441,6 +441,41 @@ h3 {
   display: none;
 }
 
+/* 照片列表标题行右侧：计数 + 清除按钮 */
+.photo-list-summary-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.photo-list-clear {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+  cursor: pointer;
+  transition:
+    color var(--dur-micro) var(--ease-out),
+    border-color var(--dur-micro) var(--ease-out),
+    background-color var(--dur-micro) var(--ease-out);
+}
+
+.photo-list-clear:hover {
+  color: var(--danger);
+  border-color: rgba(208, 122, 99, 0.55);
+  background: var(--danger-dim);
+}
+
+.photo-list-clear.is-confirm {
+  color: #ffffff;
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
 .advanced-panel > summary::after,
 .photo-list-section > summary::after {
   content: "";

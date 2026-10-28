@@ -276,6 +276,9 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     { id: "kodak-ultramax-400", name: "Kodak UltraMax 400", edgeText: "KODAK ULTRAMAX 400", process: "C-41" },
     { id: "kodak-ektar-100", name: "Kodak Ektar 100", edgeText: "KODAK EKTAR 100", process: "C-41" },
 
+    // Kodak 一次性相机底片
+    { id: "kodak-single-use", name: "柯达一次性", edgeText: "KODAK GT 800-5", process: "C-41" },
+
     // Kodak 黑白胶片
     { id: "kodak-tri-x-400", name: "Kodak Tri-X 400", edgeText: "KODAK TRI-X 400", process: "BW" },
     { id: "kodak-tmax-100", name: "Kodak T-Max 100", edgeText: "KODAK T-MAX 100", process: "BW" },
@@ -284,10 +287,14 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
     // Fujifilm 彩色负片
     { id: "fujifilm-100", name: "Fujifilm 100", edgeText: "FUJIFILM 100", process: "C-41" },
+    { id: "fuji-200", name: "Fuji 200", edgeText: "Fuji 200", process: "C-41" },
     { id: "fujifilm-400", name: "Fujifilm 400", edgeText: "FUJIFILM 400", process: "C-41" },
     { id: "fujifilm-c400", name: "Fujifilm C400", edgeText: "FUJIFILM C400", process: "C-41" },
     { id: "fujicolor-c200", name: "Fujicolor C200", edgeText: "FUJICOLOR C200", process: "C-41" },
     { id: "fujifilm-superia-400", name: "Fujifilm Superia 400", edgeText: "FUJIFILM SUPERIA 400", process: "C-41" },
+
+    // Fujifilm 一次性相机底片
+    { id: "fujifilm-single-use", name: "富士一次性", edgeText: "400-3", process: "C-41" },
 
     // Fujifilm 反转片
     { id: "fujichrome-velvia-50", name: "Fujichrome Velvia 50", edgeText: "FUJICHROME VELVIA 50", process: "E-6" },
@@ -1664,7 +1671,21 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     await exportIndexPdf();
   });
 
-  clearButton.addEventListener("click", () => {
+  // 照片列表「清除」按钮：原地二次确认
+  // 点一下变成「确认清除」，再点才真清空，5 秒自动还原；
+  // 点别处 / 收起面板也还原。不用弹窗，不打断「清空 → 重新导入」的流程。
+  let clearConfirmTimer = 0;
+
+  function resetClearConfirm() {
+    window.clearTimeout(clearConfirmTimer);
+    clearConfirmTimer = 0;
+    if (!clearButton) return;
+    clearButton.classList.remove("is-confirm");
+    clearButton.textContent = "清除";
+    clearButton.title = "清空全部照片";
+  }
+
+  function clearAllItems() {
     if (state.isExporting) {
       showNotice("请先取消当前导出，再清空照片");
       return;
@@ -1679,7 +1700,33 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     updateBackgroundControls();
     render();
     renderPhotoList();
-  });
+  }
+
+  if (clearButton) {
+    clearButton.addEventListener("click", (event) => {
+      // 按钮在 <summary> 里：必须阻止默认行为，否则会顺带展开/收起照片列表
+      event.preventDefault();
+      event.stopPropagation();
+      if (!clearButton.classList.contains("is-confirm")) {
+        clearButton.classList.add("is-confirm");
+        clearButton.textContent = "确认清除";
+        clearButton.title = "再点一次清空全部照片";
+        window.clearTimeout(clearConfirmTimer);
+        clearConfirmTimer = window.setTimeout(resetClearConfirm, 5000);
+        return;
+      }
+      resetClearConfirm();
+      clearAllItems();
+    });
+    // 点别处取消确认态
+    document.addEventListener("click", (event) => {
+      if (!clearButton.classList.contains("is-confirm")) return;
+      if (event.target === clearButton || clearButton.contains(event.target)) return;
+      resetClearConfirm();
+    });
+    // 面板收起时也还原
+    if (photoListPanel) photoListPanel.addEventListener("toggle", resetClearConfirm);
+  }
 
   // ---- 画布交互：背景拖拽平移，帧拖拽调序 ----
 
@@ -2374,6 +2421,131 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   applyPreviewZoom();
   syncLightTableControls();
 
+  // ── 文件真实格式嗅探 ────────────────────────────────────────────
+  // 浏览器给的 file.type **只看扩展名**：把 .tif 改名成 .jpg 就能混进队列，
+  // 但解码时浏览器按内容判断，照样失败 → 只报「读取失败」根本没法排查。
+  // 这里读文件头十几个字节判断真实格式，报错时能点名到底是 TIFF 还是 HEIC。
+  //
+  // 实测各格式的浏览器支持情况（Chrome）：
+  //   JPEG/PNG/WebP/BMP → 解码 OK   GIF → 解码 OK（但只有首帧，且不在白名单）
+  //   TIFF/HEIC/RAW     → InvalidStateError（浏览器没有解码器）
+  //
+  // 白名单（BMP 已正式支持，原样拖 .bmp 就能用，不必改后缀）
+  const SUPPORTED_IMAGE_MIME = /^image\/(jpeg|png|webp|bmp)$/;
+  const SUPPORTED_IMAGE_FORMATS = new Set(["jpeg", "png", "webp", "bmp"]);
+
+  const IMAGE_FORMAT_LABELS = {
+    jpeg: "JPEG",
+    png: "PNG",
+    webp: "WebP",
+    bmp: "BMP",
+    gif: "GIF",
+    tiff: "TIFF",
+    heic: "HEIC",
+    unknown: "未知格式",
+  };
+
+  // 浏览器能解码、但产品当前不收的格式：改个后缀就能用
+  // （BMP 已正式进白名单，所以这里只剩 GIF）
+  const FORMAT_RENAMABLE = new Set(["gif"]);
+
+  async function sniffImageFormat(file) {
+    let bytes;
+    try {
+      bytes = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    } catch (error) {
+      return "unknown";
+    }
+    if (!bytes || bytes.length < 4) return "unknown";
+    const b = (i) => bytes[i];
+    const ascii = (i, n) => String.fromCharCode.apply(null, bytes.slice(i, i + n));
+    if (b(0) === 0xff && b(1) === 0xd8 && b(2) === 0xff) return "jpeg";
+    if (b(0) === 0x89 && b(1) === 0x50 && b(2) === 0x4e && b(3) === 0x47) return "png";
+    if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") return "webp";
+    if (b(0) === 0x42 && b(1) === 0x4d) return "bmp";
+    if (ascii(0, 3) === "GIF") return "gif";
+    // TIFF：II*\0（小端）或 MM\0*（大端）；CR2/NEF/ARW 等 RAW 也长这样
+    if ((b(0) === 0x49 && b(1) === 0x49 && b(2) === 0x2a && b(3) === 0x00)
+      || (b(0) === 0x4d && b(1) === 0x4d && b(2) === 0x00 && b(3) === 0x2a)) return "tiff";
+    if (ascii(4, 4) === "ftyp") {
+      const brand = ascii(8, 4);
+      if (["heic", "heix", "hevc", "hevx", "mif1", "msf1"].indexOf(brand) >= 0) return "heic";
+    }
+    return "unknown";
+  }
+
+  function describeImageFormat(format) {
+    const label = IMAGE_FORMAT_LABELS[format] || IMAGE_FORMAT_LABELS.unknown;
+    if (FORMAT_RENAMABLE.has(format)) {
+      return `实际是 ${label} 格式（当前支持 JPG / PNG / WebP / BMP）；改名为 .jpg 可直接导入`;
+    }
+    if (format === "unknown") {
+      return "文件格式无法识别，浏览器也不能解码";
+    }
+    return `实际是 ${label} 格式，浏览器无法解码，请先转成 JPG`;
+  }
+
+  // 按真实格式分组（文件名最多列 3 个 + 「等 N 个」）
+  function groupByFormat(entries) {
+    const map = new Map();
+    for (const entry of entries) {
+      const format = entry.format || "unknown";
+      if (!map.has(format)) {
+        map.set(format, {
+          format,
+          label: IMAGE_FORMAT_LABELS[format] || IMAGE_FORMAT_LABELS.unknown,
+          names: [],
+        });
+      }
+      map.get(format).names.push(entry.name);
+    }
+    return Array.from(map.values()).map((g) => {
+      const names = g.names.slice(0, 3);
+      if (g.names.length > 3) names.push(`等 ${g.names.length} 个`);
+      return { format: g.format, label: g.label, names, count: g.names.length };
+    });
+  }
+
+  function formatAdvice(groups) {
+    const hints = [];
+    if (groups.some((g) => g.format === "tiff" || g.format === "heic")) {
+      hints.push("请先转成 JPG 再导入");
+    }
+    if (groups.some((g) => FORMAT_RENAMABLE.has(g.format))) {
+      hints.push("GIF 改名成 .jpg 可直接导入");
+    }
+    return hints.join("；");
+  }
+
+  // 跳过的文件：按真实格式分组说明（混进 TIFF 时能一眼看出来）
+  function describeSkipped(skippedFiles) {
+    const groups = groupByFormat(skippedFiles);
+    const parts = groups.map((g) => `${g.label} ${g.count} 个：${g.names.join("、")}`);
+    return `跳过了 ${skippedFiles.length} 个不支持的文件（${parts.join("；")}）`;
+  }
+
+  // 读取失败的文件：点名到具体是哪几张、什么格式
+  function describeFailures(failures) {
+    const groups = groupByFormat(failures);
+    const parts = groups.map((g) => `${g.label}：${g.names.join("、")}`);
+    return `${failures.length} 个文件读取失败（${parts.join("；")}）`;
+  }
+
+  // 导入问题统一播报：跳过 + 失败 + 一条合并后的处理建议。
+  // ⚠️ 「全部文件都被跳过」和「部分导入」是两条路径，必须都走这里，
+  //    否则只有部分导入时才会给建议（这个坑踩过一次）。
+  function reportImportIssues(skippedFiles, failures) {
+    const messages = [];
+    if (skippedFiles && skippedFiles.length) messages.push(describeSkipped(skippedFiles));
+    if (failures && failures.length) messages.push(describeFailures(failures));
+    if (!messages.length) return;
+    const advice = formatAdvice([
+      ...groupByFormat(skippedFiles || []),
+      ...groupByFormat(failures || []),
+    ]);
+    showNotice(messages.join("，") + (advice ? `。${advice}` : ""), 7000);
+  }
+
   async function readImageFile(file) {
     const [originalSource, taken] = await Promise.all([
       // 降采样到 PREVIEW_MAX_SIDE：批量导入大图时这是能否不崩的关键
@@ -2446,12 +2618,13 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
   function mimeTypeForRemoteFile(descriptor, responseType) {
     const type = (responseType || "").split(";", 1)[0].trim().toLowerCase();
-    if (/^image\/(jpeg|png|webp)$/.test(type)) return type;
+    if (SUPPORTED_IMAGE_MIME.test(type)) return type;
     if (type && type !== "application/octet-stream") return null;
     const name = descriptor.filename.toLowerCase();
     if (/\.jpe?g$/.test(name)) return "image/jpeg";
     if (name.endsWith(".png")) return "image/png";
     if (name.endsWith(".webp")) return "image/webp";
+    if (name.endsWith(".bmp")) return "image/bmp";
     return null;
   }
 
@@ -7134,13 +7307,26 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       if (!state.items.length) setFilmStageState("intro");
       return;
     }
-    const imageFiles = files.filter((file) => /^image\/(jpeg|png|webp)$/.test(file.type));
-    const skipped = files.length - imageFiles.length;
+    // 先嗅探每个文件的真实格式（不信扩展名），再决定放不放行：
+    //   · MIME 匹配 jpg/png/webp/bmp → 放行（保持原有行为：BMP 改后缀仍可用）
+    //   · MIME 不匹配但内容确实是 JPEG/PNG/WebP/BMP → 放行（内容能用就别误拒）
+    //   · 其余 → 跳过，并按真实格式说明原因
+    const formats = await Promise.all(files.map((file) => sniffImageFormat(file)));
+    const formatOf = new Map();
+    const imageFiles = [];
+    const skippedFiles = [];
+    files.forEach((file, index) => {
+      const format = formats[index];
+      formatOf.set(file, format);
+      const mimeOk = SUPPORTED_IMAGE_MIME.test(file.type);
+      const contentOk = SUPPORTED_IMAGE_FORMATS.has(format);
+      if (mimeOk || contentOk) imageFiles.push(file);
+      else skippedFiles.push({ name: (file && file.name) || "未知文件", format });
+    });
+    const skipped = skippedFiles.length;
     if (!imageFiles.length) {
       if (!state.items.length) setFilmStageState("intro");
-      if (skipped) {
-        showNotice(`跳过了 ${skipped} 个不支持的文件（仅支持 JPG / PNG / WebP）`);
-      }
+      if (skipped) reportImportIssues(skippedFiles, []);
       return;
     }
 
@@ -7159,6 +7345,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     // 本地导入这条路径漏了，这里按同一范式补上。
     const IMPORT_CONCURRENCY = 3;
     const succeeded = [];
+    const failures = [];
     let nextIndex = 0;
     let completed = 0;
     const worker = async () => {
@@ -7168,6 +7355,8 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
           succeeded.push(await readImageFile(file));
         } catch (error) {
           console.error("导入照片失败", file && file.name, error);
+          // 记下文件名 + 真实格式，报错时才能点名到具体是哪几张
+          failures.push({ name: (file && file.name) || "未知文件", format: formatOf.get(file) });
         } finally {
           completed += 1;
           // 进度提示：让等待可见，避免误以为卡死
@@ -7197,12 +7386,9 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     normalizeBackgroundSelection();
     updateBackgroundControls();
 
-    const messages = [];
-    if (skipped) messages.push(`跳过了 ${skipped} 个不支持的文件（仅支持 JPG / PNG / WebP）`);
-    if (failed) messages.push(`${failed} 个文件读取失败`);
-    if (messages.length) showNotice(messages.join("；"));
-
+    reportImportIssues(skippedFiles, failures);
     render();
+
     renderPhotoList();
     // 🔴 导入时不再重复 rebuildAllItemSources：
     //    readImageFile 里已经建好每张图的 source（裁切/自动旋转都在那里做过），
