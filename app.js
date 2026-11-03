@@ -447,6 +447,11 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   const EXPORT_TILE_SIDE = 8192;
   const PNG_MAX_DIMENSION = 0x7fffffff;
 
+  // 半格「单张裁切」的固定规格：一行 12 格、片头首行 10 格。
+  // 预览（getRenderOptions 的 slotCount）和导出（getPhysicalExportLayout 的 columns）
+  // 必须用同一个值，否则会出现「预览一行 12 格、导出一行 6 格」的对不上。
+  const HALF_FRAME_CROPPED_COLUMNS = 12;
+
   // 观片器倍率（相对预览显示尺寸的线性放大）无极调节区间
   const LOUPE_MIN_MAGNIFICATION = 1;
   const LOUPE_MAX_MAGNIFICATION = 60;
@@ -3541,9 +3546,36 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       const gridDpi = loadPrintSettings().dpi || 300;
       el.textContent = `${layout.presetName} 索引 · ${layout.pageWmm} × ${layout.pageHmm} mm 横向 · ${gridDpi} DPI · ${layout.rows} 行 × ${layout.columns} 列 · ${layout.canvasW.toLocaleString()} × ${layout.canvasH.toLocaleString()} px · 一页最多 ${cap} 张（当前 ${count} 张）`;
     } else {
-      const cols = Number(document.getElementById("columnsSelect").value) || 6;
+      const cols = getEffectiveExportColumns();
       el.textContent = `胶片反转 · A4 横向 297 × 210 mm · 每行 ${cols} 张 · 当前 ${count} 张`;
     }
+  }
+
+  // 导出实际的每行格数 —— 预览与导出必须用同一个来源，否则会出现
+  // 「预览一行 12 格、导出一行 6 格」的对不上。
+  // · 半格「单张裁切」是固定规格：一行 12 格、片头首行 10 格；
+  //   「每行张数」控件在该模式下是 disabled 的（值还是上次 135 留下的），不能读它。
+  //   A4 纵向时纸张宽度放不下 12 格，按纸张物理上限收窄。
+  // · 其余画幅读「每行张数」控件。
+  function getEffectiveExportColumns() {
+    if (!isCroppedHalfFrameMode()) {
+      return Number(document.getElementById("columnsSelect").value) || 6;
+    }
+    const preset = exportPagePreset.value;
+    const isA4 = preset !== "free" && !FilmIndex6Inch.isGridPreset(preset);
+    let columns = HALF_FRAME_CROPPED_COLUMNS;
+    if (isA4) {
+      const { margin: marginMm } = loadPrintSettings();
+      const orientation = preset.endsWith("-landscape") ? "landscape" : "portrait";
+      const pageMm = PrintPhysical.PAGE_A4_MM[orientation];
+      const autoColumns = PrintPhysical.fitColumns(
+        pageMm.w - marginMm * 2 - 3 * 2, // stripPadXMm = 3（半格）
+        18,                              // slotWMm = 18mm（半格裁切）
+        1,                               // gapMm = 1mm（半格裁切）
+      );
+      columns = Math.min(columns, autoColumns);
+    }
+    return columns;
   }
 
   // ── 导出前的胶卷型号确认 ────────────────────────────────────────
@@ -4952,7 +4984,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     const wideSlotW = Math.round(format.imageWidthMm * pxPerMm135);
     const slotW = isCroppedHalfFrame ? baseFrameW / 2 : isWide135 ? wideSlotW : baseFrameW;
     const slotCount = isCroppedHalfFrame
-      ? 12
+      ? HALF_FRAME_CROPPED_COLUMNS
       : is120
         ? format.columns
         : isWide135
@@ -5224,7 +5256,12 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
 
     const minimumColumns = isHalfFrame && !isCroppedHalfFrame ? 4 : 2;
     let columns;
-    if (isA4) {
+    if (isCroppedHalfFrame) {
+      // 半格「单张裁切」固定 12 格/行（预览同源），A4 纵向按纸张宽度收窄。
+      // 绝不读「每行张数」控件 —— 该控件在此模式下是 disabled 的，
+      // 值还是上次 135 留下的，读它会导致「预览 12 格 / 导出 6 格」。
+      columns = getEffectiveExportColumns();
+    } else if (isA4) {
       const orientation = preset.endsWith("-landscape") ? "landscape" : "portrait";
       const pageMm = PrintPhysical.PAGE_A4_MM[orientation];
       const autoColumns = PrintPhysical.fitColumns(
