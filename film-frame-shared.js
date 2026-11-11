@@ -114,6 +114,53 @@
     }
   }
 
+  /**
+   * 按 sourceTurns 旋转绘制照片源。
+   *
+   * 为什么需要（2026-11-10）：
+   * 之前「自动转 90°」是把位图真的转一遍、再存一份新位图。37 张 2000px 照片
+   * 实测导入后常驻 611MB，其中 246MB 就是这份旋转副本 —— 同一份像素换个方向存了两份。
+   * 手机浏览器进程内存上限远低于桌面，叠加导出画布后直接被系统杀进程（白屏）。
+   *
+   * 现在旋转只记录角度（item.sourceTurns），绘制时用变换矩阵完成，位图始终只有一份。
+   * turns 为 0 时走原来的直绘路径，行为完全不变。
+   *
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {CanvasImageSource} source 原始位图
+   * @param {number} turns 0-3，顺时针 90° 的次数
+   * @param {number} sourceWidth 原始位图宽（未旋转）
+   * @param {number} sourceHeight 原始位图高（未旋转）
+   * @param {{x,y,w,h}} dest 目标矩形（已按旋转后的呈现尺寸算好）
+   */
+  function drawRotatedSource(ctx, source, turns, sourceWidth, sourceHeight, dest) {
+    const t = ((Number(turns) || 0) % 4 + 4) % 4;
+    if (t === 0) {
+      ctx.drawImage(source, dest.x, dest.y, dest.w, dest.h);
+      return;
+    }
+    ctx.save();
+    switch (t) {
+      case 1:
+        // 顺时针 90°：目标左上角 = 旋转后矩形的右上角
+        ctx.translate(dest.x + dest.w, dest.y);
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, dest.h, dest.w);
+        break;
+      case 2:
+        ctx.translate(dest.x + dest.w, dest.y + dest.h);
+        ctx.rotate(Math.PI);
+        ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, dest.w, dest.h);
+        break;
+      default:
+        // 逆时针 90°
+        ctx.translate(dest.x, dest.y + dest.h);
+        ctx.rotate(-Math.PI / 2);
+        ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, 0, 0, dest.h, dest.w);
+        break;
+    }
+    ctx.restore();
+  }
+
   window.FilmFrameShared = Object.freeze({
     resolveTune,
     roundedRect,
@@ -124,5 +171,6 @@
     beginStripSurface,
     endStripSurface,
     fillCheckerboard,
+    drawRotatedSource,
   });
 })();

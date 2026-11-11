@@ -34,6 +34,7 @@
     buildSingleStripPath,
     setEdgeInk,
     fillCheckerboard,
+    drawRotatedSource,
   } = Shared;
   const getTune = (options) => Shared.resolveTune(options, DEFAULT_TUNE_135);
 
@@ -151,7 +152,12 @@
     ctx.fillStyle = "#1b1b1b";
     ctx.fillRect(geometry.bounds.x, geometry.bounds.y, geometry.bounds.w, geometry.bounds.h);
     ctx.globalAlpha = drawState.dragAlpha ?? 1;
-    ctx.drawImage(item.source, drawX, drawY, drawW, drawH);
+    // item.width/height 是「旋转后」的呈现尺寸，取景按它算；
+    // 实际绘制用原始位图尺寸 + sourceTurns 角度（见 drawRotatedSource）。
+    const turns = item.sourceTurns || 0;
+    const rawW = turns % 2 === 1 ? item.height : item.width;
+    const rawH = turns % 2 === 1 ? item.width : item.height;
+    drawRotatedSource(ctx, item.source, turns, rawW, rawH, { x: drawX, y: drawY, w: drawW, h: drawH });
     ctx.globalAlpha = 1;
     ctx.restore();
 

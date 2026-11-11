@@ -803,6 +803,11 @@ input[type="range"]:focus-visible {
   grid-template-columns: 1fr 1fr;
 }
 
+/* 5 个用途：3 + 2 两行 */
+.segmented-5 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
 .segmented label {
   min-width: 0;
 }

@@ -2,9 +2,9 @@
  * 网格索引输出引擎（多尺寸：6 寸 / 8 寸 / A4）
  *
  * 设计原则：完全复用胶卷的既有逻辑，本文件不改任何照片处理行为。
- *   - 照片源用 item.source —— 裁切（cropRect）、手动旋转（manualTurns）、
- *     EXIF 自动旋转（autoTurns）都已由 app.js 的 rebuildItemSource 烘焙进
- *     item.source，这里只读不改。
+ *   - 照片源用 item.source —— 裁切（cropRect）由 app.js 的 rebuildItemSource 烘焙进
+ *     item.source；旋转（手动 manualTurns / EXIF 自动旋转 autoTurns）改为记录角度
+ *     item.sourceTurns，绘制时用变换矩阵完成，不再单独存一份旋转副本（省内存）。
  *   - 填充方式与 FilmFrame135.getCoverPlacement 一致：Math.max 等比放大填满
  *     格子并居中裁切，不留白、不变形。
  *   - 只画照片本身，不画齿孔、不画边字框。
@@ -18,6 +18,9 @@
  */
 (function (global) {
   "use strict";
+
+  const Shared = global.FilmFrameShared;
+  if (!Shared) throw new Error("FilmFrameShared module is unavailable.");
 
   // ── 尺寸预设 ────────────────────────────────────────────────────────
   // 全部横向。physical = 导出时是否默认勾选「真实尺寸打印」。
@@ -501,12 +504,19 @@
     const drawX = cell.x + (cell.w - drawW) / 2;
     const drawY = cell.y + (cell.h - drawH) / 2;
 
+    // 旋转不物化成新位图（省内存），绘制时按 sourceTurns 变换
+    const turns = (item && item.sourceTurns) || 0;
+    const rawW = turns % 2 === 1 ? sh : sw;
+    const rawH = turns % 2 === 1 ? sw : sh;
+
     context.save();
     context.beginPath();
     context.rect(cell.x, cell.y, cell.w, cell.h);
     context.clip();
     try {
-      context.drawImage(source, drawX, drawY, drawW, drawH);
+      Shared.drawRotatedSource(context, source, turns, rawW, rawH, {
+        x: drawX, y: drawY, w: drawW, h: drawH,
+      });
     } catch (error) {
       console.error("网格索引：照片绘制失败", error);
     }

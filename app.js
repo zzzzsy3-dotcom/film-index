@@ -75,14 +75,22 @@
   const PURPOSE_INDEX6 = "index6";       // 6 寸索引
   const PURPOSE_INDEX8 = "index8";       // 8 寸索引
   const PURPOSE_INDEX_A4 = "indexa4";    // A4 索引（297×210 横向网格）
+  const PURPOSE_PHOTO_PRINT = "print";   // 照片打印（每张照片一页无边距 PDF）
 
-  // 用途 → 网格索引 presetId（胶片反转没有网格）
+  // 用途 → 网格索引 presetId（胶片反转 / 照片打印没有网格）
   const PURPOSE_TO_GRID_PRESET = {
     [PURPOSE_INDEX6]: "6inch",
     [PURPOSE_INDEX8]: "8inch",
     [PURPOSE_INDEX_A4]: "a4grid",
   };
   const GRID_PURPOSES = Object.keys(PURPOSE_TO_GRID_PRESET);
+
+  // 照片打印：每张照片一页 6 寸相纸，横向 3:2 铺满，PDF 零白边。
+  // 页面尺寸 = 6 寸相纸（4×6 inch）横放：152.4 × 101.6 mm。
+  const PHOTO_PRINT_PAGE_W_MM = 152.4;
+  const PHOTO_PRINT_PAGE_H_MM = 101.6;
+  const PHOTO_PRINT_RATIO = 3 / 2;   // 照片统一裁成 3:2 横向
+
   const columnsHint = document.getElementById("columnsHint");
 
 
@@ -446,6 +454,42 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   const MAX_CANVAS_AREA = 16384 * 16384;
   const EXPORT_TILE_SIDE = 8192;
   const PNG_MAX_DIMENSION = 0x7fffffff;
+
+  /**
+   * 导出内存预算（2026-11-10 内存崩溃修复）。
+   *
+   * 实测：37 张 5397×3602 照片导入后常驻 377MB（已优化掉旋转副本，原为 611MB），
+   * 导出时还要叠加画布。手机浏览器的进程内存上限远低于桌面，
+   * 峰值超过预算时会被系统直接杀进程 —— 表现就是「卡死白屏」，没有任何报错。
+   *
+   * 这里按「设备能给的内存」推算安全水位：
+   *   - deviceMemory：Chrome/Android 提供的近似 RAM（GB），Safari 不提供
+   *   - 拿不到就按 4GB 保守估计
+   * 再留出一半给浏览器自身（DOM/JS/图片解码），剩余部分才允许画布用。
+   */
+  const EXPORT_MEMORY_BUDGET_RATIO = 0.5;
+
+  function getDeviceMemoryGB() {
+    const reported = Number(navigator.deviceMemory);
+    if (Number.isFinite(reported) && reported > 0) return reported;
+    return 4; // Safari 不提供 deviceMemory，按 4GB 保守估计
+  }
+
+  function getExportMemoryBudgetBytes() {
+    const gb = getDeviceMemoryGB();
+    // 桌面浏览器单进程可用内存远大于标称 RAM 的可用部分，这里再留一档余量
+    const usableGB = gb >= 8 ? gb * 0.55 : gb * 0.45;
+    return Math.max(256 * 1024 * 1024, usableGB * 1024 * 1024 * 1024 * EXPORT_MEMORY_BUDGET_RATIO);
+  }
+
+  // 估算当前常驻的位图显存（照片源）
+  function estimateResidentBitmapBytes() {
+    return state.items.reduce((sum, item) => {
+      const source = item && item.source;
+      if (!source || !source.width || !source.height) return sum;
+      return sum + source.width * source.height * 4;
+    }, 0);
+  }
 
   // 半格「单张裁切」的固定规格：一行 12 格、片头首行 10 格。
   // 预览（getRenderOptions 的 slotCount）和导出（getPhysicalExportLayout 的 columns）
@@ -888,6 +932,12 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     updateExportMemoryWarning();
     updateExportPurposeInfo();
     updateExportStockRow();
+    // 照片打印只产出 PDF：隐藏「导出图片」和「打印」，避免点了没反应
+    const photoPrint = getPurposeMode() === PURPOSE_PHOTO_PRINT;
+    const imageBtn = document.getElementById("exportModalConfirm");
+    const printBtn = document.getElementById("exportModalPrint");
+    if (imageBtn) imageBtn.hidden = photoPrint;
+    if (printBtn) printBtn.hidden = photoPrint;
     exportModal.hidden = false;
     document.body.style.overflow = "hidden";
     // 通知改到顶部显示，避免被弹窗底部按钮区遮住
@@ -1673,6 +1723,11 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
   exportModalPdf.addEventListener("click", async () => {
     closeExportModal();
+    // 照片打印用途：每张照片一页 6 寸相纸的零白边 PDF，走独立导出器
+    if (getPurposeMode() === PURPOSE_PHOTO_PRINT) {
+      await exportPhotoPrintPdf();
+      return;
+    }
     await exportIndexPdf();
   });
 
@@ -2337,6 +2392,13 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       return;
     }
 
+    // 照片打印：每张照片独立成页，没有「每行张数」的概念 → 隐藏该控件
+    // （显隐统一由 applyPurposeVisibility 管理，这里不重复处理）
+    if (getPurposeMode() === PURPOSE_PHOTO_PRINT) {
+      if (columnsHint) columnsHint.hidden = true;
+      return;
+    }
+
     Array.from(columnsSelect.options).forEach((option) => {
       option.disabled = false;
     });
@@ -2680,11 +2742,10 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     item.editWidth = full.width;
     item.editHeight = full.height;
     item.source = full;
-    item.width = full.width;
-    item.height = full.height;
     item.fullResolution = true;
     item.fullResolutionBackup = keepPreview;
     // 用全分辨率重做一遍裁切 + 旋转
+    // （宽高由 rebuildItemSource 按旋转后的呈现方向统一计算）
     await rebuildItemSource(item, item.editVersion);
     return item;
   }
@@ -2706,10 +2767,8 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     item.editWidth = backup.originalSource.width;
     item.editHeight = backup.originalSource.height;
     item.source = backup.originalSource;
-    item.width = backup.originalSource.width;
-    item.height = backup.originalSource.height;
-    item.autoTurns = 0;
-    // 重新套用裁切与旋转
+    // 旋转信息由 rebuildItemSource 依据降采样版重新计算，
+    // 这里不能沿用全分辨率时的宽高（方向可能不同）。
     await rebuildItemSource(item, item.editVersion);
     return item;
   }
@@ -3056,23 +3115,18 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       ownedSources.add(editCandidate);
     }
 
+    // 旋转改为「记录角度」而不是「物化成新位图」。
+    // 原因（2026-11-10 实测）：37 张 2000px 照片导入后常驻 611MB，
+    // 其中 246MB 是自动转 90° 的副本 —— 同一份像素换个方向却单独存了一份。
+    // 手机浏览器进程内存上限远低于桌面，611MB + 导出画布直接触发系统杀进程（白屏）。
+    // 现在只记录 turns，绘制时用变换矩阵旋转，位图始终只有一份。
     const autoTurns = getAutoTurnsForSource(candidate);
-    if (autoTurns) {
-      const next = await rotateSourceClockwise(candidate);
-      candidate = next;
-      ownedSources.add(next);
-    }
+    const totalTurns = (autoTurns + item.manualTurns) % 4;
 
-    for (let turn = 0; turn < item.manualTurns; turn += 1) {
-      const previousCandidate = candidate;
-      const next = await rotateSourceClockwise(previousCandidate);
-      if (previousCandidate !== original && previousCandidate !== editCandidate) {
-        ownedSources.delete(previousCandidate);
-        closeSource(previousCandidate);
-      }
-      candidate = next;
-      ownedSources.add(next);
-    }
+    // 裁切坐标系跟随原图方向：manualTurns 不改变原始像素，
+    // 只在最终绘制时叠加，因此这里始终基于原始像素计算。
+    item.autoTurns = autoTurns;
+    item.sourceTurns = totalTurns;
 
     const current =
       sourceGeneration === item.sourceGeneration &&
@@ -3088,9 +3142,10 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     item.editWidth = editCandidate ? editCandidate.width : original.width;
     item.editHeight = editCandidate ? editCandidate.height : original.height;
     item.source = candidate;
-    item.width = candidate.width;
-    item.height = candidate.height;
-    item.autoTurns = autoTurns;
+    // 宽高反映「最终呈现方向」，布局与取景都按这个算
+    const rotated = totalTurns % 2 === 1;
+    item.width = rotated ? candidate.height : candidate.width;
+    item.height = rotated ? candidate.width : candidate.height;
 
     const adopted = new Set([original, editCandidate, candidate]);
     closeDistinctSources(
@@ -3430,6 +3485,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
 
   function applyPurposeVisibility() {
     const grid = isGridPurpose();
+    const photoPrint = getPurposeMode() === PURPOSE_PHOTO_PRINT;
     const presetId = getGridPresetId();
     const preset = presetId ? FilmIndex6Inch.getPreset(presetId) : null;
 
@@ -3439,18 +3495,30 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
     });
     const logoField = document.getElementById("brandLogoFieldLeft");
     if (logoField) logoField.hidden = !grid;
+    // 照片打印：每张照片独立成页，没有「每行张数」的概念 → 隐藏该控件
+    const colsField = columnsSelect.closest(".field");
+    if (colsField) colsField.hidden = photoPrint;
+    if (columnsHint) {
+      if (photoPrint) columnsHint.hidden = true;
+    }
     const hint = document.getElementById("purposeHint");
     if (hint) {
-      hint.textContent = preset
-        ? `${preset.name} 索引 · ${preset.w} × ${preset.h} mm · 一张纸打印全部照片，最后一行右侧放品牌信息`
-        : "反转胶片：A4 横向，按胶片尺寸真实打印";
+      if (photoPrint) {
+        hint.textContent = "照片打印：每张照片一页 6 寸相纸，横向 3:2 铺满，PDF 零白边";
+      } else {
+        hint.textContent = preset
+          ? `${preset.name} 索引 · ${preset.w} × ${preset.h} mm · 一张纸打印全部照片，最后一行右侧放品牌信息`
+          : "反转胶片：A4 横向，按胶片尺寸真实打印";
+      }
     }
     const chip = document.getElementById("stepChipPurpose");
     if (chip) {
       const cols = document.getElementById("columnsSelect");
       setStepChip(
         chip,
-        preset ? `${preset.name} 索引` : `胶片反转 · ${cols ? cols.value : 6} 张/行`,
+        photoPrint
+          ? "照片打印 · 6 寸无边距"
+          : preset ? `${preset.name} 索引` : `胶片反转 · ${cols ? cols.value : 6} 张/行`,
         true,
       );
     }
@@ -3459,6 +3527,7 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
   // 切换用途
   function setPurposeMode(mode) {
     const grid = GRID_PURPOSES.indexOf(mode) >= 0;
+    const photoPrint = mode === PURPOSE_PHOTO_PRINT;
     const presetId = PURPOSE_TO_GRID_PRESET[mode] || null;
     const preset = presetId ? FilmIndex6Inch.getPreset(presetId) : null;
 
@@ -3473,6 +3542,13 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
         const margin = document.getElementById("physicalMargin");
         if (margin) margin.value = "6";
       }
+    } else if (photoPrint) {
+      // 照片打印：页面固定为 6 寸相纸（横放），尺寸由 PDF 生成器直接决定，
+      // 不走 exportPagePreset / 真实尺寸 / 页边距那套胶片条逻辑。
+      exportPagePreset.value = "a4-landscape";
+      exportPhysical.checked = false;
+      const dpi = document.getElementById("exportDpi");
+      if (dpi) dpi.value = "300";
     } else {
       exportPagePreset.value = "a4-landscape";
       // 胶片反转的默认打印设置（方案 A：切回时强制设成这一组）
@@ -3545,6 +3621,11 @@ const loupeFrameTag = document.getElementById("loupeFrameTag");
       const cap = layout.cells.filter((c) => !c.blocked).length;
       const gridDpi = loadPrintSettings().dpi || 300;
       el.textContent = `${layout.presetName} 索引 · ${layout.pageWmm} × ${layout.pageHmm} mm 横向 · ${gridDpi} DPI · ${layout.rows} 行 × ${layout.columns} 列 · ${layout.canvasW.toLocaleString()} × ${layout.canvasH.toLocaleString()} px · 一页最多 ${cap} 张（当前 ${count} 张）`;
+    } else if (getPurposeMode() === PURPOSE_PHOTO_PRINT) {
+      // 照片打印：每张照片一页 6 寸相纸（横放），零白边
+      const dpi = Number(exportDpi.value) || 300;
+      const page = getPhotoPrintPagePixels(dpi);
+      el.textContent = `照片打印 · 每张一页 6 寸相纸 ${PHOTO_PRINT_PAGE_W_MM} × ${PHOTO_PRINT_PAGE_H_MM} mm 横向 · ${dpi} DPI · ${page.w} × ${page.h} px · 3:2 铺满无边距 · 共 ${count} 页`;
     } else {
       const cols = getEffectiveExportColumns();
       el.textContent = `胶片反转 · A4 横向 297 × 210 mm · 每行 ${cols} 张 · 当前 ${count} 张`;
@@ -3754,6 +3835,59 @@ function updateStepChips() {
     }
   }
 
+  // 照片打印预览：显示第 1 张照片按 6 寸相纸 3:2 居中裁切后的实际效果。
+  // 每张照片独立成页，所以预览只有一张；右侧文字标注总页数与规格。
+  function drawPhotoPrintPreview(items) {
+    const prevCanvas = activeCanvas;
+    const prevCtx = ctx;
+    const canvas = previewCanvas;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    // 预览用较高像素密度，保证高清屏下不发虚
+    const containerW = previewWrap.clientWidth || 800;
+    const targetCssW = Math.max(240, containerW - 56);
+    const previewDpi = Math.round(clamp((targetCssW * 2 * 25.4) / PHOTO_PRINT_PAGE_W_MM, 96, 600));
+    const page = getPhotoPrintPagePixels(previewDpi);
+
+    canvas.width = page.w;
+    canvas.height = page.h;
+    activeCanvas = canvas;
+    ctx = context;
+    try {
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, page.w, page.h);
+      const first = items[0];
+      if (first && first.source) {
+        // 竖向照片横过来印（与导出保持一致）
+        let source = first.source;
+        if (source.height > source.width) {
+          source = rotateSourceClockwiseForPreview(source);
+        }
+        drawPhotoCover(context, source, page.w, page.h);
+      }
+    } catch (error) {
+      console.error("照片打印预览绘制失败", error);
+    } finally {
+      activeCanvas = prevCanvas;
+      ctx = prevCtx;
+    }
+    state.frameRects = [];
+    applyPreviewZoom();
+  }
+
+  // 预览用的旋转：同步版（只用于预览，不改动 item.source）
+  function rotateSourceClockwiseForPreview(source) {
+    const canvas = document.createElement("canvas");
+    canvas.width = source.height;
+    canvas.height = source.width;
+    const rotCtx = canvas.getContext("2d");
+    rotCtx.translate(canvas.width, 0);
+    rotCtx.rotate(Math.PI / 2);
+    rotCtx.drawImage(source, 0, 0);
+    return canvas;
+  }
+
   function render() {
     updateStepChips();
     if (!state.items.length) {
@@ -3777,6 +3911,19 @@ function updateStepChips() {
       endLoading();
       exportButton.disabled = state.isExporting && !state.exportHydrationItems;
       syncGridColumns();
+      updateExportPurposeInfo();
+      return;
+    }
+
+    // 照片打印：每张照片一页 6 寸相纸，预览显示第 1 张的实际效果
+    if (getPurposeMode() === PURPOSE_PHOTO_PRINT) {
+      drawPhotoPrintPreview(items);
+      statusTitle.textContent = `照片打印预览 · 第 1 张 / 共 ${items.length} 张`;
+      imageCounter.textContent = `${items.length} 张`;
+      emptyState.classList.add("is-hidden");
+      previewWrap.classList.remove("is-empty");
+      endLoading();
+      exportButton.disabled = state.isExporting && !state.exportHydrationItems;
       updateExportPurposeInfo();
       return;
     }
@@ -4203,6 +4350,17 @@ function updateStepChips() {
     const pageWpt = pageWmm * PDF_PT_PER_MM;
     const pageHpt = pageHmm * PDF_PT_PER_MM;
 
+    // 兜底：/Width /Height 必须都是正整数。
+    // 少一个就会写成 "/Height undefined"，阅读器算不出图像尺寸 → 整页渲染成空白，
+    // 而且 PDF 照样有体积，很难一眼看出问题。这里直接抛错，让调用方走错误提示。
+    pages.forEach((page, index) => {
+      const w = Math.round(Number(page.widthPx));
+      const h = Math.round(Number(page.heightPx));
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+        throw new Error(`PDF_PAGE_SIZE_INVALID:${index}:${page.widthPx}x${page.heightPx}`);
+      }
+    });
+
     // 对象编号规划：
     //   1 Catalog, 2 Pages, 3..(2+N) Page, (3+N)..(2+2N) Image, (3+2N)..(2+3N) Content
     const n = pages.length;
@@ -4341,6 +4499,68 @@ function updateStepChips() {
     return new Blob([buildPdfBytes(pdfPages, pageWmm, pageHmm)], { type: "application/pdf" });
   }
 
+  /**
+   * 逐页渲染并合成 PDF（内存友好版）。
+   *
+   * 与 exportPdfFromCanvas 的区别：不先画整幅总图，而是每页单独画一张单页画布。
+   * 峰值内存从「总图 + 切页图」降到「单页图」。
+   * 见 renderArtworkPageToCanvas 的说明（2026-11-10 内存崩溃修复）。
+   */
+  async function exportPdfPageByPage(items, options, layout) {
+    const preset = exportPagePreset.value;
+    const gridPreset = FilmIndex6Inch.isGridPreset(preset) ? FilmIndex6Inch.getPreset(preset) : null;
+    let pageWmm;
+    let pageHmm;
+    if (gridPreset) {
+      pageWmm = gridPreset.w;
+      pageHmm = gridPreset.h;
+    } else if (preset !== "free") {
+      const landscape = preset.endsWith("-landscape");
+      pageWmm = landscape ? 297 : 210;
+      pageHmm = landscape ? 210 : 297;
+    } else {
+      const pxPerMm = PrintPhysical.getPxPerMm(loadPrintSettings().dpi);
+      pageWmm = roundTo(layout.canvasW / pxPerMm, 2);
+      pageHmm = roundTo(layout.canvasH / pxPerMm, 2);
+    }
+
+    const pageList = (layout.pages && layout.pages.length)
+      ? layout.pages
+      : [{ y: 0, w: layout.canvasW, h: layout.canvasH }];
+
+    const pdfPages = [];
+    for (let i = 0; i < pageList.length; i += 1) {
+      const page = pageList[i];
+      if (state.exportCancelled) throw new DOMException("Export cancelled", "AbortError");
+      exportButton.textContent = `正在生成 PDF（${i + 1}/${pageList.length} 页）...`;
+      const pageCanvas = renderArtworkPageToCanvas(items, options, layout, page);
+      // 每页独立校验：某页画空了立刻报错，不让整份 PDF 变成空白
+      const pageProbe = probeExportCanvas(pageCanvas, {
+        transparent: false,
+        blurred: options.backgroundMode === "blur" && !state.lightTable.active,
+        grid: Boolean(layout.sixInch),
+      });
+      if (!pageProbe.ok) {
+        pageCanvas.width = 0;
+        pageCanvas.height = 0;
+        console.error("PDF 单页像素校验未通过", pageProbe);
+        throw new Error("PDF_PAGE_RENDER_FAILED");
+      }
+      // JPEG 质量 0.95：兼顾清晰度与体积（PDF 内嵌 JPEG 无法再压）
+      const bytes = await canvasToJpegBytes(pageCanvas, 0.95);
+      // widthPx / heightPx 必须成对给：buildPdfBytes 会写成 /Width /Height，
+      // 少一个就会变成 "/Height undefined"，阅读器算不出图像尺寸 → 整页渲染空白。
+      pdfPages.push({ bytes, widthPx: page.w, heightPx: page.h });
+      pageCanvas.width = 0;
+      pageCanvas.height = 0;
+      // 让出主线程，避免长任务卡住页面
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+    if (!pdfPages.length) throw new Error("PDF_NO_PAGES");
+
+    return new Blob([buildPdfBytes(pdfPages, pageWmm, pageHmm)], { type: "application/pdf" });
+  }
+
   // 本地时区的当天日期（不能用 toISOString，那是 UTC，晚上会差一天）
   function getLocalDateStamp() {
     const now = new Date();
@@ -4425,6 +4645,43 @@ function updateStepChips() {
       ctx = previousCtx;
     }
     return outputCanvas;
+  }
+
+  /**
+   * 逐页渲染：只画一页的内容，画布尺寸 = 单页尺寸。
+   *
+   * 为什么需要（2026-11-10）：
+   * 原流程是「先画一张整幅总图，再从总图上切出每一页」。
+   * A4 横向 300 DPI 两页 = 3508×4960 = 66MB 总图，切页时还要再开一张同尺寸画布，
+   * 实测导出期画布峰值 199MB；600 DPI 时总图 266MB + 切页 133MB，峰值 797MB。
+   * 叠加照片常驻内存后，手机浏览器进程会被系统杀掉（白屏）。
+   *
+   * 现在改成每页独立绘制，峰值只剩单页（300 DPI 约 16.6MB / 600 DPI 约 66MB）。
+   * 页面内容与之前完全一致 —— 只是把「先画整幅再裁」换成「按页分别画」。
+   */
+  function renderArtworkPageToCanvas(items, options, layout, page) {
+    const previousCanvas = activeCanvas;
+    const previousCtx = ctx;
+    const pageCanvas = document.createElement("canvas");
+    pageCanvas.width = page.w;
+    pageCanvas.height = page.h;
+    const pageCtx = pageCanvas.getContext("2d");
+    if (!pageCtx) throw new Error("Canvas 2D context unavailable");
+    activeCanvas = pageCanvas;
+    ctx = pageCtx;
+    try {
+      // 复用 drawLayout 的 tile 机制：把该页区域平移到画布原点
+      drawLayout(items, options, layout, {
+        x: 0,
+        y: page.y,
+        width: page.w,
+        height: page.h,
+      });
+    } finally {
+      activeCanvas = previousCanvas;
+      ctx = previousCtx;
+    }
+    return pageCanvas;
   }
 
   // 是否请求了「原图级」导出（网格索引的格子尺寸统一，不支持原图级放大）
@@ -4529,18 +4786,9 @@ function updateStepChips() {
       }
       const { isPhysical, isFullResolution, options, layout, meta, sizeLabel } = plan;
 
-      // 预估内存占用：RGBA 原始像素 + 编码缓冲（约 1.5–2 倍）
-      const estimatedPixelBytes = layout.canvasW * layout.canvasH * 4;
-      const estimatedPeakBytes = estimatedPixelBytes * 2;
-      const estimatedPeakMB = Math.round(estimatedPeakBytes / 1024 / 1024);
-      const memoryWarningThreshold = 500 * 1024 * 1024; // 500MB 阈值
-
-      if (estimatedPeakBytes > memoryWarningThreshold) {
-        showNotice(
-          `导出约需 ${estimatedPeakMB}MB 内存，如遇闪退请降低导出质量或减少照片数量`,
-          5000,
-        );
-      }
+      // 内存预算检查：超本机安全水位时自动降 DPI 并告知
+      // （原来这里只按固定 500MB 提示，不区分设备，低内存手机照样被系统杀进程）
+      if (!checkExportMemoryBudget(plan, { label: "导出" })) return;
 
       const exceedsCanvasLimit =
         !Number.isFinite(layout.canvasW) ||
@@ -4586,7 +4834,7 @@ function updateStepChips() {
       });
       if (!exportProbe.ok) {
         console.error("导出画布像素校验未通过，疑似显存/内存不足导致静默渲染失败", exportProbe);
-        showNotice("导出失败：画面未能渲染（已拦截黑图），请关闭占用内存的程序、降低输出倍数或减少照片数量后重试");
+        showNotice("导出失败：该页画面未能渲染，可能是内存不足。请关闭占用内存的程序、降低输出倍数或减少照片数量后重试");
         return;
       }
 
@@ -4771,6 +5019,227 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     return Math.round(value * factor) / factor;
   }
 
+  // ── 照片打印：每张照片一页 6 寸相纸的零白边 PDF ──────────────────
+  // 页面 = 152.4 × 101.6 mm（6 寸相纸横放），照片统一 3:2 横向居中裁切铺满。
+  // PDF 的 MediaBox 精确等于图像尺寸 → 页面本身没有任何白边，
+  // 打印时选「实际大小 / 无边距」即可整幅铺满相纸。
+
+  // 把一张源图裁成 3:2 横向并铺满目标画布（居中裁切，不留白）
+  function drawPhotoCover(ctx, source, targetW, targetH, turns = 0) {
+    const sw = source.width;
+    const sh = source.height;
+    const t = ((Number(turns) || 0) % 4 + 4) % 4;
+    if (t === 0) {
+      const srcRatio = sw / sh;
+      const dstRatio = targetW / targetH;
+      let sx = 0;
+      let sy = 0;
+      let sWidth = sw;
+      let sHeight = sh;
+      if (srcRatio > dstRatio) {
+        // 原图更宽 → 裁左右
+        sWidth = sh * dstRatio;
+        sx = (sw - sWidth) / 2;
+      } else if (srcRatio < dstRatio) {
+        // 原图更高 → 裁上下
+        sHeight = sw / dstRatio;
+        sy = (sh - sHeight) / 2;
+      }
+      ctx.drawImage(source, sx, sy, sWidth, sHeight, 0, 0, targetW, targetH);
+      return;
+    }
+    // 旋转后（顺时针 90° 的奇数倍）：宽高互换，先按旋转后的比例裁剪，
+    // 再用变换矩阵绘制（见 FilmFrameShared.drawRotatedSource）。
+    const odd = t % 2 === 1;
+    const effW = odd ? sh : sw;
+    const effH = odd ? sw : sh;
+    const srcRatio = effW / effH;
+    const dstRatio = targetW / targetH;
+    let cw = effW;
+    let ch = effH;
+    if (srcRatio > dstRatio) {
+      cw = effH * dstRatio;
+    } else if (srcRatio < dstRatio) {
+      ch = effW / dstRatio;
+    }
+    // 裁切窗口在「旋转后坐标系」中的左上角
+    const cx = (effW - cw) / 2;
+    const cy = (effH - ch) / 2;
+    const scale = targetW / cw;
+    // 把旋转后坐标系映射回原始像素坐标
+    let sx = 0;
+    let sy = 0;
+    let sWidth = sw;
+    let sHeight = sh;
+    if (t === 1) {
+      // 顺时针 90°：旋转后 (x,y) ↔ 原始 (y, H-x)
+      sx = cy;
+      sy = sw - cx - cw;
+      sWidth = ch;
+      sHeight = cw;
+    } else if (t === 3) {
+      // 逆时针 90°
+      sx = sh - cy - ch;
+      sy = cx;
+      sWidth = ch;
+      sHeight = cw;
+    } else {
+      // 180°
+      sx = sw - cx - cw;
+      sy = sh - cy - ch;
+      sWidth = cw;
+      sHeight = ch;
+    }
+    ctx.save();
+    ctx.translate(targetW, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.scale(scale, scale);
+    ctx.drawImage(source, sx, sy, sWidth, sHeight, 0, 0, cw, ch);
+    ctx.restore();
+  }
+
+  // 照片打印的页面尺寸（像素）——按 DPI 从相纸毫米尺寸换算
+  function getPhotoPrintPagePixels(dpi) {
+    const pxPerMm = dpi / 25.4;
+    return {
+      w: Math.round(PHOTO_PRINT_PAGE_W_MM * pxPerMm),
+      h: Math.round(PHOTO_PRINT_PAGE_H_MM * pxPerMm),
+    };
+  }
+
+  // 照片打印导出：每张照片一页，逐页生成 JPEG 再拼成 PDF
+  async function exportPhotoPrintPdf() {
+    const originalButtonText = exportButton.textContent;
+    state.isExporting = true;
+    state.exportCancelled = false;
+    setSourceEditingLocked(true);
+    exportButton.textContent = "取消 PDF 导出";
+
+    try {
+      const items = await prepareArtworkSources();
+      if (!items) return;
+      if (!items.length) {
+        showNotice("没有可导出的照片");
+        return;
+      }
+
+      const dpi = Number(exportDpi.value) || 300;
+      const page = getPhotoPrintPagePixels(dpi);
+
+      // 逐张处理：旋转（竖向照片横过来印）→ 3:2 居中裁切 → JPEG
+      const pdfPages = [];
+      for (let i = 0; i < items.length; i += 1) {
+        if (state.exportCancelled) {
+          showNotice("照片打印 PDF 导出已取消");
+          return;
+        }
+        const item = items[i];
+        exportButton.textContent = `正在处理 ${i + 1}/${items.length}...`;
+
+        // 竖向照片横过来打印：复用胶卷的自动转向逻辑
+        // （targetPortraitMode 为 false 时，竖图转 1 次 90°，横图不动）
+        // 注意：旋转现在只记录在 item.sourceTurns，item.source 本身是未旋转的原始位图，
+        // 所以朝向要按 sourceTurns 判断，不能再用 source 的宽高比。
+        const turns = (item.sourceTurns || 0) % 4;
+        const presentedPortrait = turns % 2 === 1
+          ? item.width < item.height
+          : item.width > item.height;
+        let source = item.source;
+        let sourceTurns = turns;
+        if (source && presentedPortrait) {
+          // 需要顺时针再转 90° → 合成到最终角度
+          sourceTurns = (turns + 1) % 4;
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = page.w;
+        canvas.height = page.h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          showNotice("照片打印导出失败：浏览器无法创建画布");
+          return;
+        }
+        drawPhotoCover(ctx, source, page.w, page.h, sourceTurns);
+
+        // JPEG 0.95：PDF 内嵌 JPEG 无法再压，0.95 兼顾清晰度与体积
+        const bytes = await canvasToJpegBytes(canvas, 0.95);
+        pdfPages.push({ bytes, widthPx: page.w, heightPx: page.h });
+
+        // 显式释放画布内存（40 张大图会累积）
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      if (!pdfPages.length) {
+        showNotice("照片打印导出失败：没有生成任何页面");
+        return;
+      }
+
+      exportButton.textContent = "正在生成 PDF...";
+      const pdfBlob = new Blob(
+        [buildPdfBytes(pdfPages, PHOTO_PRINT_PAGE_W_MM, PHOTO_PRINT_PAGE_H_MM)],
+        { type: "application/pdf" },
+      );
+      const filename = ["photo-print", getLocalDateStamp(), `${dpi}dpi`].join("-");
+      downloadBlob(pdfBlob, `${filename}.pdf`);
+      showNotice(
+        `已导出 ${pdfPages.length} 页照片打印 PDF · 6 寸相纸 152.4 × 101.6 mm · ${dpi} DPI`,
+      );
+    } catch (error) {
+      console.error("照片打印 PDF 导出失败", error);
+      showNotice("照片打印 PDF 导出失败，请降低打印 DPI 后重试");
+    } finally {
+      state.isExporting = false;
+      state.exportCancelled = false;
+      setSourceEditingLocked(false);
+      exportButton.textContent = originalButtonText;
+      render();
+    }
+  }
+
+  /**
+   * 导出前的内存预算检查：估算「常驻位图 + 导出画布」峰值，
+   * 超过设备安全水位时自动降 DPI，并把降档事实明确告诉用户。
+   *
+   * 为什么要自动降而不是直接失败（2026-11-10）：
+   * 之前的做法是超限就抛「画面未能渲染（已拦截黑图）」，
+   * 但真正的死因是进程内存被系统杀掉（白屏），根本走不到那句提示。
+   * 与其让用户猜，不如自动降到能跑通的档位，并说清楚降到了哪一档。
+   *
+   * @returns {boolean} true=可以继续导出；false=已终止导出
+   */
+  function checkExportMemoryBudget(plan, { label = "导出" } = {}) {
+    const budget = getExportMemoryBudgetBytes();
+    const resident = estimateResidentBitmapBytes();
+    const layout = plan && plan.layout;
+    if (!layout) return true;
+    // 单页画布像素 ×4 字节（RGBA），再留一份给编码缓冲
+    const pageBytes = layout.canvasW * layout.canvasH * 4;
+    const peak = resident + pageBytes * 2;
+    if (peak <= budget) return true;
+
+    const overRatio = peak / budget;
+    // 超得越多，降得越狠：先降到 300 DPI，还不够就 150
+    const targetDpi = overRatio > 2.5 ? "150" : "300";
+    const currentDpi = String(exportDpi.value || "300");
+    if (exportDpi.value !== targetDpi && exportPhysical.checked) {
+      exportDpi.value = targetDpi;
+      exportDpi.dispatchEvent(new Event("change", { bubbles: true }));
+      showNotice(
+        `${label}所需内存约 ${Math.round(peak / 1048576)}MB，超过本机安全水位 `
+        + `${Math.round(budget / 1048576)}MB，已自动降到 ${targetDpi} DPI（画面尺寸不变，精度降低）`,
+        7000,
+      );
+      return true;
+    }
+    // 已经降到最低还超：明确告知，让用户减少照片数量
+    showNotice(
+      `${label}需要约 ${Math.round(peak / 1048576)}MB 内存，本机安全上限约 `
+      + `${Math.round(budget / 1048576)}MB。请减少照片数量或分批${label}`,
+      8000,
+    );
+    return false;
+  }
+
   // 导出 PDF：整份索引图合成单个多页 PDF，页面尺寸为精确物理毫米
   async function exportIndexPdf() {
     const originalButtonText = exportButton.textContent;
@@ -4803,6 +5272,9 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       }
       const { options, layout, meta } = plan;
 
+      // 内存预算检查：超水位时自动降 DPI 并告知（见 checkExportMemoryBudget）
+      if (!checkExportMemoryBudget(plan, { label: "PDF 导出" })) return;
+
       const exceeds =
         layout.canvasW > MAX_CANVAS_SIDE ||
         layout.canvasH > MAX_CANVAS_SIDE ||
@@ -4816,32 +5288,19 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
         options.backgroundMode = "white";
       }
 
-      let outputCanvas;
-      try {
-        outputCanvas = renderArtworkToCanvas(items, options, layout);
-      } catch (error) {
-        console.error("PDF 画布绘制失败", error);
-        showNotice("导出失败：浏览器无法创建该尺寸画布，请降低输出质量或减少照片数量");
-        return;
-      }
-
-      const probe = probeExportCanvas(outputCanvas, {
-        transparent: false,
-        blurred: options.backgroundMode === "blur" && !state.lightTable.active,
-        grid: Boolean(layout.sixInch),
-      });
-      if (!probe.ok) {
-        console.error("PDF 画布像素校验未通过", probe);
-        showNotice("导出失败：画面未能渲染（已拦截黑图），请降低输出倍数或减少照片数量后重试");
-        return;
-      }
-
       let pdfBlob;
       try {
-        pdfBlob = await exportPdfFromCanvas(outputCanvas, layout);
+        // 逐页渲染：每页单独画一张单页画布，峰值内存远低于「先画整幅再切页」
+        pdfBlob = await exportPdfPageByPage(items, options, layout);
       } catch (error) {
         console.error("PDF 生成失败", error);
-        showNotice("PDF 生成失败，请减少照片数量或降低输出质量后重试");
+        if (error && error.message === "PDF_PAGE_RENDER_FAILED") {
+          showNotice("导出失败：该页画面未能渲染，可能是内存不足。请降低输出倍数或减少照片数量后重试");
+        } else if (error && error.name === "AbortError") {
+          showNotice("PDF 导出已取消");
+        } else {
+          showNotice("PDF 生成失败，请减少照片数量或降低输出质量后重试");
+        }
         return;
       }
 
@@ -4931,7 +5390,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       });
       if (!printProbe.ok) {
         console.error("打印画布像素校验未通过，疑似显存/内存不足导致静默渲染失败", printProbe);
-        showNotice("打印失败：画面未能渲染，请关闭占用内存的程序、降低输出质量或减少照片数量后重试");
+        showNotice("打印失败：画面未能渲染，可能是内存不足。请关闭占用内存的程序、降低输出质量或减少照片数量后重试");
         return;
       }
 
@@ -6753,7 +7212,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       } else if (error.message === "FRAME_EXPORT_SOURCE_CHANGED") {
         frameExportStatus.textContent = "图片状态已变化，请关闭后重新打开";
       } else if (error.message === "FRAME_EXPORT_BLANK_CANVAS") {
-        frameExportStatus.textContent = "画面未能渲染（已拦截黑图），请关闭占用内存的程序或降低输出质量后重试";
+        frameExportStatus.textContent = "画面未能渲染，可能是内存不足。请关闭占用内存的程序或降低输出质量后重试";
       } else {
         console.error("单帧导出失败", error);
         frameExportStatus.textContent = exportState.mode === "batch" ? "批量导出失败，请降低输出质量后重试" : "单帧导出失败，请降低输出质量后重试";
@@ -6940,9 +7399,16 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     cropModal.hidden = false;
     document.body.style.overflow = "hidden";
 
+    // 裁切弹窗显示的是「旋转后的呈现方向」。
+    // 旋转现在只记录角度（item.sourceTurns），item.source 是未旋转的原始位图，
+    // 所以这里的 sourceW/sourceH 取呈现尺寸，底图靠变换矩阵画出来。
     const cropSource = item.source;
-    const sourceW = cropSource.width;
-    const sourceH = cropSource.height;
+    const cropTurns = (item.sourceTurns || 0) % 4;
+    const rawW = cropSource.width;
+    const rawH = cropSource.height;
+    const oddTurns = cropTurns % 2 === 1;
+    const sourceW = oddTurns ? rawH : rawW;
+    const sourceH = oddTurns ? rawW : rawH;
     const baseSource = item.editSource || item.originalSource;
 
     const maxW = 640;
@@ -6954,7 +7420,15 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
     cropCanvas.width = displayW;
     cropCanvas.height = displayH;
     const cropCtx = cropCanvas.getContext("2d");
-    cropCtx.drawImage(cropSource, 0, 0, displayW, displayH);
+    // 用共享的旋转绘制把原始位图摆成呈现方向（turns=0 时行为与原来一致）
+    FilmFrameShared.drawRotatedSource(
+      cropCtx,
+      cropSource,
+      cropTurns,
+      rawW,
+      rawH,
+      { x: 0, y: 0, w: displayW, h: displayH },
+    );
 
     const slotRatio = getCurrentInputAdapter().slotRatio;
     const aspectRatio = sourceW >= sourceH
@@ -7001,7 +7475,7 @@ html, body { margin: 0; padding: 0; background: #ffffff; }
       sourceW,
       sourceH,
       baseSource,
-      sourceTurns: (item.autoTurns + item.manualTurns) % 4,
+      sourceTurns: cropTurns,
       editVersion: item.editVersion,
       requestGeneration,
       drag: null,

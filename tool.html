@@ -31,7 +31,7 @@
     </script>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23171310'/%3E%3Crect x='6' y='6' width='20' height='20' rx='2' fill='%23100d0a'/%3E%3Ccircle cx='16' cy='14' r='5' fill='%236d9fc0'/%3E%3Crect x='8' y='22' width='16' height='1.6' fill='%236d9fc0' opacity='.55'/%3E%3C/svg%3E" />
     <!-- 本地分发版：已移除 Google Fonts（国内可能加载失败），styles.css 会自动回退到系统字体 -->
-    <link rel="stylesheet" href="styles.css?v=20261025-clear" />
+    <link rel="stylesheet" href="styles.css?v=20261107-photoprint" />
     <script>
       // 访问守卫：直接访问 tool.html（绕过密码页）时也必须验证。
       // sessionStorage 只在当前标签页有效，关闭标签页即失效。
@@ -88,7 +88,7 @@
             <div class="step-body">
               <div class="field">
                 <span>输出用途</span>
-                <div class="segmented segmented-4" role="radiogroup" aria-label="输出用途">
+                <div class="segmented segmented-5" role="radiogroup" aria-label="输出用途">
                   <label>
                     <input type="radio" name="purposeMode" value="negative" checked />
                     <span>胶片反转<br /><small>A4 横向</small></span>
@@ -104,6 +104,10 @@
                   <label>
                     <input type="radio" name="purposeMode" value="indexa4" />
                     <span>A4 索引<br /><small>297 × 210</small></span>
+                  </label>
+                  <label>
+                    <input type="radio" name="purposeMode" value="print" />
+                    <span>照片打印<br /><small>6 寸无边距</small></span>
                   </label>
                 </div>
                 <small class="field-hint" id="purposeHint">反转胶片：A4 横向，按胶片尺寸真实打印</small>
@@ -796,14 +800,14 @@
     <div class="notice" id="notice" role="status" aria-live="polite"></div>
 
     <script src="baidu-pan-config.js"></script>
-    <script src="film-frame-shared.js?v=20260823-shared"></script>
-    <script src="film-frame-135.js?v=20261011-edgenum"></script>
+    <script src="film-frame-shared.js?v=20261110-memfix"></script>
+    <script src="film-frame-135.js?v=20261110-memfix"></script>
     <script src="film-frame.js?v=20260823-shared"></script>
     <script src="print-physical.js?v=20260923-print"></script>
     <script src="optical-loupe.js"></script>
     <script src="film-index-logos.js?v=20261021-logos"></script>
-    <script src="film-index-6inch.js?v=20261024-stockcheck"></script>
-    <script src="app.js?v=20261103-halfframe"></script>
+    <script src="film-index-6inch.js?v=20261110-memfix"></script>
+    <script src="app.js?v=20261111-pdfheight"></script>
     <script src="gsap-ui.js?v=20261012-sidebar"></script>
   </body>
 </html>
